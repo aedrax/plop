@@ -1,0 +1,50 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+// PrintManual displays a help menu for plop
+func PrintManual() {
+
+	// Default paths
+	optDir := "~/.local/opt"
+	binDir := "~/.local/bin"
+	if val := os.Getenv("XDG_BIN_HOME"); val != "" {
+		binDir = val
+	}
+
+	// Clean paths using tilde notations where possible
+	home, err := os.UserHomeDir()
+	if err == nil {
+		if strings.HasPrefix(optDir, home) {
+			optDir = "~" + strings.TrimPrefix(optDir, home)
+		}
+		if strings.HasPrefix(binDir, home) {
+			binDir = "~" + strings.TrimPrefix(binDir, home)
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("plop (Pull, Link, Organize, Place):Local Archive Installer")
+	fmt.Println("==========================================================================")
+	fmt.Println("Automatically pulls archives, links binaries, organizes desktop files,")
+	fmt.Println("and places them neatly in your local user space sandbox.")
+	fmt.Println()
+	fmt.Println("Usage:")
+	fmt.Printf("  plop <command> [arguments]\n")
+	fmt.Printf("  plop <archive-path-or-url>  (Implicit install)\n")
+	fmt.Println()
+}
+
+func main() {
+	// Parse CLI arguments
+	args := os.Args[1:]
+
+	if len(args) == 0 {
+		PrintManual()
+		return
+	}
+}
