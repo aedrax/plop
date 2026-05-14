@@ -8,6 +8,7 @@ import (
 
 // PrintManual displays a help menu for plop
 func PrintManual() {
+	configPath, _ := GetConfigPath()
 
 	// Default paths
 	optDir := "~/.local/opt"
@@ -19,6 +20,9 @@ func PrintManual() {
 	// Clean paths using tilde notations where possible
 	home, err := os.UserHomeDir()
 	if err == nil {
+		if strings.HasPrefix(configPath, home) {
+			configPath = "~" + strings.TrimPrefix(configPath, home)
+		}
 		if strings.HasPrefix(optDir, home) {
 			optDir = "~" + strings.TrimPrefix(optDir, home)
 		}
@@ -28,7 +32,7 @@ func PrintManual() {
 	}
 
 	fmt.Println()
-	fmt.Println("plop (Pull, Link, Organize, Place):Local Archive Installer")
+	fmt.Println("plop (Pull, Link, Organize, Place): Local Archive Installer")
 	fmt.Println("==========================================================================")
 	fmt.Println("Automatically pulls archives, links binaries, organizes desktop files,")
 	fmt.Println("and places them neatly in your local user space sandbox.")
@@ -37,6 +41,10 @@ func PrintManual() {
 	fmt.Printf("  plop <command> [arguments]\n")
 	fmt.Printf("  plop <archive-path-or-url>  (Implicit install)\n")
 	fmt.Println()
+	fmt.Println("Global Directories & Registry (XDG Compliant):")
+	fmt.Printf("  - Config path:   %s\n", configPath)
+	fmt.Printf("  - Bin Directory: %s\n", binDir)
+	fmt.Printf("  - Opt Sandbox:   %s/<app>\n", optDir)
 }
 
 func main() {
