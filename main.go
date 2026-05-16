@@ -32,8 +32,8 @@ func PrintManual() {
 	}
 
 	fmt.Println()
-	fmt.Println("plop (Pull, Link, Organize, Place): Local Archive Installer")
-	fmt.Println("==========================================================================")
+	fmt.Println(color(ColorBold+ColorCyan, "plop (Pull, Link, Organize, Place): Local Archive Installer"))
+	fmt.Println(color(ColorGray, "=========================================================================="))
 	fmt.Println("Automatically pulls archives, links binaries, organizes desktop files,")
 	fmt.Println("and places them neatly in your local user space sandbox.")
 	fmt.Println()
@@ -41,7 +41,7 @@ func PrintManual() {
 	fmt.Printf("  plop <command> [arguments]\n")
 	fmt.Printf("  plop <archive-path-or-url>  (Implicit install)\n")
 	fmt.Println()
-	fmt.Println("Global Directories & Registry (XDG Compliant):")
+	fmt.Println(color(ColorBold, "Global Directories & Registry (XDG Compliant):"))
 	fmt.Printf("  - Config path:   %s\n", configPath)
 	fmt.Printf("  - Bin Directory: %s\n", binDir)
 	fmt.Printf("  - Opt Sandbox:   %s/<app>\n", optDir)
