@@ -208,6 +208,7 @@ func SetAppMetadata(appName string, options SetAppOptions, config *Config, reg *
 		reg.Apps[appName] = app
 	}
 
+	// if there are changes, save the registry; otherwise skip writing to disk
 	if hasChanges {
 		err := SaveRegistry(reg)
 		if err != nil {
