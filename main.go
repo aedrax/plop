@@ -225,6 +225,7 @@ func handleUninstall(args []string, config *Config, reg *Registry) {
 	}
 }
 
+// handleSet allows modifying app metadata like name, version, or update source after installation
 func handleSet(args []string, config *Config, reg *Registry) {
 	if len(args) < 2 {
 		PrintError("Missing argument: plop set <app-name>")
