@@ -71,6 +71,7 @@ type UpgradeTarget struct {
 	Version     string
 }
 
+// UpgradeAll checks all registered applications for updates and offers to upgrade them in sequence
 func UpgradeAll(config *Config, reg *Registry) error {
 	if len(reg.Apps) == 0 {
 		PrintInfo("No applications currently installed.")
