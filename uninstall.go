@@ -17,6 +17,7 @@ func UninstallApp(appName string, config *Config, reg *Registry) error {
 
 	PrintInfo("Uninstalling application '%s'...", appName)
 
+	// Confirm uninstallation with user (unless auto-confirm is enabled)
 	if !config.AutoConfirm {
 		ans := PromptUser(fmt.Sprintf("Are you sure you want to completely uninstall '%s'? [y/N]: ", appName), "n")
 		if strings.ToLower(ans) != "y" {
