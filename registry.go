@@ -100,6 +100,7 @@ func SaveRegistry(reg *Registry) error {
 		return err
 	}
 
+	// set the marshal indent for better readability, since this file is meant to be user-facing
 	data, err := json.MarshalIndent(reg, "", "  ")
 	if err != nil {
 		return err
