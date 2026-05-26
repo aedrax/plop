@@ -154,7 +154,7 @@ func ParseGithubRepo(urlStr string) string {
 
 // PromptUser asks a question via stdin and returns the trimmed response
 func PromptUser(prompt string, defaultVal string) string {
-	fmt.Printf(prompt)
+	fmt.Print(prompt)
 	reader := bufio.NewReader(os.Stdin)
 	input, err := reader.ReadString('\n')
 	if err != nil {
