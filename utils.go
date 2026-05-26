@@ -26,6 +26,7 @@ const (
 
 var colorsEnabled = true
 
+// Any initialization logic for the package can go here
 func init() {
 	InitColors()
 }
