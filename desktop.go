@@ -29,6 +29,7 @@ func ProcessDesktopFile(srcPath, destPath, execPath, iconPath string) error {
 			}
 		}
 
+		// Only modify Exec and Icon fields within the [Desktop Entry] section
 		if inDesktopEntry {
 			if strings.HasPrefix(trimmed, "Exec=") {
 				// Safely preserve launcher arguments (like %u, %F, etc.)
