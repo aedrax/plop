@@ -184,6 +184,7 @@ func RunUpdateCheck(config *Config, reg *Registry) error {
 			continue
 		}
 
+		// check the version information from the release, and if it is newer than the current version, print it out as an available update
 		latestVersion := strings.TrimPrefix(release.TagName, "v")
 		if latestVersion != app.Version {
 			line := fmt.Sprintf("  %-15s Current: "+color(ColorYellow, "%-10s")+" -> Latest: "+color(ColorGreen, "%-10s")+" ("+color(ColorBold, "Available!")+")", name, app.Version, latestVersion)
