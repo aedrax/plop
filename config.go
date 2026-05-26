@@ -86,6 +86,7 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 
+	// If config file doesn't exist, create it with default values
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		binDir := "~/.local/bin"
 		if val := os.Getenv("XDG_BIN_HOME"); val != "" {
