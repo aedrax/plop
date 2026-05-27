@@ -35,21 +35,31 @@ func GetRegistryPath() (string, error) {
 		return registryPathOverride, nil
 	}
 
-	// Check standard XDG config location first for backward compatibility
-	configHome := GetXdgConfigHome()
-	if configHome != "" {
-		legacyPath := filepath.Join(configHome, "plop", "registry.json")
+	// Check legacy config home location for backward compatibility.
+	// Old installations may have registry.json in the config directory.
+	configDir := PlatformConfigDir()
+	if configDir != "" {
+		legacyPath := filepath.Join(configDir, "registry.json")
 		if _, err := os.Stat(legacyPath); err == nil {
 			return legacyPath, nil
 		}
 	}
 
-	// Default to XDG data home (or ~/.local/share/plop/registry.json)
-	dataHome := GetXdgDataHome()
-	if dataHome == "" {
+	// Default to platform-appropriate data directory.
+	// On macOS: ~/Library/Application Support/plop/registry.json
+	// On Linux: ~/.local/share/plop/registry.json
+	// With XDG_DATA_HOME override: $XDG_DATA_HOME/plop/registry.json
+	dataDir := PlatformDataDir()
+	if dataDir == "" {
 		return "", fmt.Errorf("could not determine home or XDG_DATA_HOME directory")
 	}
-	return filepath.Join(dataHome, "plop", "registry.json"), nil
+
+	// Ensure directory exists with 0755 permissions on first access
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return "", fmt.Errorf("could not create data directory: %w", err)
+	}
+
+	return filepath.Join(dataDir, "registry.json"), nil
 }
 
 // LoadRegistry loads the application registration mapping

@@ -12,8 +12,8 @@ import (
 type Config struct {
 	OptDir      string `json:"opt_dir"`
 	BinDir      string `json:"bin_dir"`
-	AppsDir     string `json:"apps_dir"`
-	IconsDir    string `json:"icons_dir"`
+	AppsDir     string `json:"apps_dir,omitempty"`
+	IconsDir    string `json:"icons_dir,omitempty"`
 	GithubToken string `json:"github_token"`
 	AutoConfirm bool   `json:"auto_confirm"`
 	DefaultGUI  *bool  `json:"default_gui"`
@@ -40,28 +40,20 @@ func ExpandTilde(path string) string {
 
 // GetXdgConfigHome returns the base directory for configurations
 func GetXdgConfigHome() string {
-	val := os.Getenv("XDG_CONFIG_HOME")
-	if val != "" {
-		return val
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	dir := PlatformConfigDir()
+	if dir == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config")
+	return filepath.Dir(dir)
 }
 
 // GetXdgDataHome returns the base directory for data files
 func GetXdgDataHome() string {
-	val := os.Getenv("XDG_DATA_HOME")
-	if val != "" {
-		return val
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	dir := PlatformDataDir()
+	if dir == "" {
 		return ""
 	}
-	return filepath.Join(home, ".local", "share")
+	return filepath.Dir(dir)
 }
 
 // GetConfigPath returns the absolute path to the configuration file
@@ -86,32 +78,22 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 
-	// If config file doesn't exist, create it with default values
+	// If config file doesn't exist, create it with platform-appropriate defaults
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		binDir := "~/.local/bin"
-		if val := os.Getenv("XDG_BIN_HOME"); val != "" {
-			binDir = val
-		}
+		cfg := PlatformDefaultConfig()
 
-		appsDir := "~/.local/share/applications"
-		iconsDir := "~/.local/share/icons"
-		if val := os.Getenv("XDG_DATA_HOME"); val != "" {
-			appsDir = filepath.Join(val, "applications")
-			iconsDir = filepath.Join(val, "icons")
+		// On macOS, exclude apps_dir and icons_dir from the JSON file
+		// (desktop integration is not applicable). The omitempty tag handles
+		// this when we marshal a copy with empty values.
+		var data []byte
+		if IsDarwin() {
+			jsonCfg := *cfg
+			jsonCfg.AppsDir = ""
+			jsonCfg.IconsDir = ""
+			data, err = json.MarshalIndent(&jsonCfg, "", "  ")
+		} else {
+			data, err = json.MarshalIndent(cfg, "", "  ")
 		}
-
-		// Create default config with tilde-prefixed or XDG-environment standard paths
-		cfg := &Config{
-			OptDir:      "~/.local/opt",
-			BinDir:      binDir,
-			AppsDir:     appsDir,
-			IconsDir:    iconsDir,
-			GithubToken: "",
-			AutoConfirm: false,
-			DefaultGUI:  nil,
-		}
-
-		data, err := json.MarshalIndent(cfg, "", "  ")
 		if err != nil {
 			return nil, err
 		}

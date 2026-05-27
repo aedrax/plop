@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/quick"
 )
 
 func TestDeduceAppDetails(t *testing.T) {
@@ -724,10 +726,16 @@ func TestXdgEnvironmentVariables(t *testing.T) {
 		t.Errorf("expected BinDir to be overridden to %q, got %q", binDir, cfg.BinDir)
 	}
 	expectedAppsDir := filepath.Join(dataDir, "applications")
+	if IsDarwin() {
+		expectedAppsDir = filepath.Join(dataDir, "plop", "applications")
+	}
 	if cfg.AppsDir != expectedAppsDir {
 		t.Errorf("expected AppsDir to be overridden to %q, got %q", expectedAppsDir, cfg.AppsDir)
 	}
 	expectedIconsDir := filepath.Join(dataDir, "icons")
+	if IsDarwin() {
+		expectedIconsDir = filepath.Join(dataDir, "plop", "icons")
+	}
 	if cfg.IconsDir != expectedIconsDir {
 		t.Errorf("expected IconsDir to be overridden to %q, got %q", expectedIconsDir, cfg.IconsDir)
 	}
@@ -896,5 +904,271 @@ func TestFindBestLinuxAsset(t *testing.T) {
 	url, name = FindBestLinuxAsset(releaseStandard)
 	if url != "https://github.com/linux-tar" || name != "janice-0.10.0-linux-amd64.tar.xz" {
 		t.Errorf("expected Linux xz tarball asset to be selected, got url=%q, name=%q", url, name)
+	}
+}
+
+// Config round-trip preservation
+func TestPropertyConfigRoundTrip(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	// Generate random valid Config structs, write them as JSON to a temp config path,
+	// then call LoadConfig and verify all fields match.
+	err := quick.Check(func(optDir, binDir, appsDir, iconsDir, token string, autoConfirm, hasGUI, guiVal bool) bool {
+		// Filter out invalid path strings (empty or containing null bytes)
+		for _, s := range []string{optDir, binDir} {
+			if s == "" || strings.ContainsRune(s, 0) {
+				return true // skip invalid inputs
+			}
+		}
+		if strings.ContainsRune(appsDir, 0) || strings.ContainsRune(iconsDir, 0) || strings.ContainsRune(token, 0) {
+			return true // skip invalid inputs
+		}
+
+		// Create isolated temp environment
+		tempDir := t.TempDir()
+		configDir := filepath.Join(tempDir, "config", "plop")
+		err := os.MkdirAll(configDir, 0755)
+		if err != nil {
+			t.Logf("MkdirAll failed: %v", err)
+			return false
+		}
+
+		// Build the Config to write
+		var defaultGUI *bool
+		if hasGUI {
+			v := guiVal
+			defaultGUI = &v
+		}
+		original := Config{
+			OptDir:      optDir,
+			BinDir:      binDir,
+			AppsDir:     appsDir,
+			IconsDir:    iconsDir,
+			GithubToken: token,
+			AutoConfirm: autoConfirm,
+			DefaultGUI:  defaultGUI,
+		}
+
+		// Write config as JSON
+		data, err := json.MarshalIndent(&original, "", "  ")
+		if err != nil {
+			t.Logf("Marshal failed: %v", err)
+			return false
+		}
+		configPath := filepath.Join(configDir, "config.json")
+		err = os.WriteFile(configPath, data, 0644)
+		if err != nil {
+			t.Logf("WriteFile failed: %v", err)
+			return false
+		}
+
+		// Point XDG_CONFIG_HOME to our temp dir so LoadConfig finds our file
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, "config"))
+
+		// LoadConfig should load the existing file
+		loaded, err := LoadConfig()
+		if err != nil {
+			t.Logf("LoadConfig failed: %v", err)
+			return false
+		}
+
+		// Compare all fields
+		if loaded.OptDir != original.OptDir {
+			t.Logf("OptDir mismatch: got %q, want %q", loaded.OptDir, original.OptDir)
+			return false
+		}
+		if loaded.BinDir != original.BinDir {
+			t.Logf("BinDir mismatch: got %q, want %q", loaded.BinDir, original.BinDir)
+			return false
+		}
+		if loaded.AppsDir != original.AppsDir {
+			t.Logf("AppsDir mismatch: got %q, want %q", loaded.AppsDir, original.AppsDir)
+			return false
+		}
+		if loaded.IconsDir != original.IconsDir {
+			t.Logf("IconsDir mismatch: got %q, want %q", loaded.IconsDir, original.IconsDir)
+			return false
+		}
+		if loaded.GithubToken != original.GithubToken {
+			t.Logf("GithubToken mismatch: got %q, want %q", loaded.GithubToken, original.GithubToken)
+			return false
+		}
+		if loaded.AutoConfirm != original.AutoConfirm {
+			t.Logf("AutoConfirm mismatch: got %v, want %v", loaded.AutoConfirm, original.AutoConfirm)
+			return false
+		}
+		if original.DefaultGUI == nil && loaded.DefaultGUI != nil {
+			t.Logf("DefaultGUI mismatch: got non-nil, want nil")
+			return false
+		}
+		if original.DefaultGUI != nil {
+			if loaded.DefaultGUI == nil {
+				t.Logf("DefaultGUI mismatch: got nil, want %v", *original.DefaultGUI)
+				return false
+			}
+			if *loaded.DefaultGUI != *original.DefaultGUI {
+				t.Logf("DefaultGUI mismatch: got %v, want %v", *loaded.DefaultGUI, *original.DefaultGUI)
+				return false
+			}
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("Config round-trip preservation failed: %v", err)
+	}
+}
+
+// XDG override precedence
+func TestPropertyXDGOverridePrecedence(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(configHome, dataHome, binHome string) bool {
+		// Filter: must be non-empty and no null bytes
+		for _, s := range []string{configHome, dataHome, binHome} {
+			if s == "" || strings.ContainsRune(s, 0) {
+				return true // skip invalid inputs
+			}
+		}
+
+		// Use absolute paths to avoid ambiguity
+		tempDir := t.TempDir()
+		absConfigHome := filepath.Join(tempDir, "xdg", configHome)
+		absDataHome := filepath.Join(tempDir, "xdg", dataHome)
+		absBinHome := filepath.Join(tempDir, "xdg", binHome)
+
+		// Set XDG environment variables
+		t.Setenv("XDG_CONFIG_HOME", absConfigHome)
+		t.Setenv("XDG_DATA_HOME", absDataHome)
+		t.Setenv("XDG_BIN_HOME", absBinHome)
+
+		// Verify PlatformConfigDir derives from XDG_CONFIG_HOME
+		gotConfigDir := PlatformConfigDir()
+		expectedConfigDir := filepath.Join(absConfigHome, "plop")
+		if gotConfigDir != expectedConfigDir {
+			t.Logf("PlatformConfigDir: got %q, want %q", gotConfigDir, expectedConfigDir)
+			return false
+		}
+
+		// Verify PlatformDataDir derives from XDG_DATA_HOME
+		gotDataDir := PlatformDataDir()
+		expectedDataDir := filepath.Join(absDataHome, "plop")
+		if gotDataDir != expectedDataDir {
+			t.Logf("PlatformDataDir: got %q, want %q", gotDataDir, expectedDataDir)
+			return false
+		}
+
+		// Verify PlatformDefaultConfig uses XDG_BIN_HOME for BinDir
+		defaultCfg := PlatformDefaultConfig()
+		if defaultCfg.BinDir != absBinHome {
+			t.Logf("PlatformDefaultConfig().BinDir: got %q, want %q", defaultCfg.BinDir, absBinHome)
+			return false
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("XDG override precedence failed: %v", err)
+	}
+}
+
+// Directory auto-creation on first access
+func TestPropertyDirectoryAutoCreation(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(seed uint32) bool {
+		// Generate a safe ASCII subdirectory name from the seed
+		const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+		subDir := ""
+		v := seed
+		if v == 0 {
+			v = 1
+		}
+		for i := 0; i < 8; i++ {
+			subDir += string(chars[v%uint32(len(chars))])
+			v = v / uint32(len(chars))
+		}
+		if subDir == "" {
+			return true
+		}
+
+		tempDir := t.TempDir()
+		configHome := filepath.Join(tempDir, subDir, "cfg")
+		dataHome := filepath.Join(tempDir, subDir, "data")
+
+		// Set XDG overrides to point to non-existent directories
+		t.Setenv("XDG_CONFIG_HOME", configHome)
+		t.Setenv("XDG_DATA_HOME", dataHome)
+
+		// Clear registry override so GetRegistryPath uses PlatformDataDir
+		oldOverride := registryPathOverride
+		registryPathOverride = ""
+		defer func() { registryPathOverride = oldOverride }()
+
+		// Verify config directory doesn't exist yet
+		configDir := filepath.Join(configHome, "plop")
+		if _, err := os.Stat(configDir); err == nil {
+			return true // already exists, skip (shouldn't happen with TempDir)
+		}
+
+		// LoadConfig should auto-create the config directory
+		_, err := LoadConfig()
+		if err != nil {
+			t.Logf("LoadConfig failed: %v", err)
+			return false
+		}
+
+		// Verify config directory was created with 0755
+		info, err := os.Stat(configDir)
+		if err != nil {
+			t.Logf("Config dir not created: %v", err)
+			return false
+		}
+		if !info.IsDir() {
+			t.Logf("Config path is not a directory")
+			return false
+		}
+		perm := info.Mode().Perm()
+		if perm != 0755 {
+			t.Logf("Config dir permissions: got %o, want 0755", perm)
+			return false
+		}
+
+		// GetRegistryPath should auto-create the data directory
+		dataDir := filepath.Join(dataHome, "plop")
+		// Remove legacy path if LoadConfig created it in configHome
+		// (GetRegistryPath checks legacy first)
+		legacyReg := filepath.Join(configDir, "registry.json")
+		os.Remove(legacyReg)
+
+		_, err = GetRegistryPath()
+		if err != nil {
+			t.Logf("GetRegistryPath failed: %v", err)
+			return false
+		}
+
+		// Verify data directory was created with 0755
+		info, err = os.Stat(dataDir)
+		if err != nil {
+			t.Logf("Data dir not created: %v", err)
+			return false
+		}
+		if !info.IsDir() {
+			t.Logf("Data path is not a directory")
+			return false
+		}
+		perm = info.Mode().Perm()
+		if perm != 0755 {
+			t.Logf("Data dir permissions: got %o, want 0755", perm)
+			return false
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("Directory auto-creation on first access failed: %v", err)
 	}
 }
