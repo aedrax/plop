@@ -88,6 +88,21 @@ func ExtractArchive(srcPath, destDir string) error {
 		return err
 	}
 
+	// Handle .dmg files before tar/zip
+	if strings.HasSuffix(strings.ToLower(srcPath), ".dmg") {
+		if IsDarwin() {
+			warning, err := ExtractDMG(srcPath, destDir)
+			if err != nil {
+				return err
+			}
+			if warning != "" {
+				PrintWarning(warning)
+			}
+			return nil
+		}
+		return fmt.Errorf("unsupported archive format: .dmg files are not supported on this platform")
+	}
+
 	ext := strings.ToLower(srcPath)
 	var cmd *exec.Cmd
 
@@ -237,6 +252,137 @@ func IsExecutable(path string) (bool, bool, error) {
 	}
 
 	return false, false, nil
+}
+
+// ExtractDMG mounts a .dmg file, copies non-hidden contents to destDir, then detaches.
+// Returns an error if mounting fails. Returns a warning string if detach fails.
+func ExtractDMG(srcPath, destDir string) (warning string, err error) {
+	// Create a temporary mount point
+	tmpMount, err := os.MkdirTemp("", "plop-dmg-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp mount point: %v", err)
+	}
+	defer os.RemoveAll(tmpMount)
+
+	// Mount the DMG
+	attachCmd := exec.Command("hdiutil", "attach", "-nobrowse", "-noverify", "-mountpoint", tmpMount, srcPath)
+	var attachStdout, attachStderr bytes.Buffer
+	attachCmd.Stdout = &attachStdout
+	attachCmd.Stderr = &attachStderr
+	if err := attachCmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to mount DMG %s: %v, stderr: %s", srcPath, err, attachStderr.String())
+	}
+
+	// Parse the mount point from stdout, look for /Volumes/ path
+	mountPoint := ""
+	for _, line := range strings.Split(attachStdout.String(), "\n") {
+		if idx := strings.Index(line, "/Volumes/"); idx >= 0 {
+			mountPoint = strings.TrimSpace(line[idx:])
+			break
+		}
+	}
+	// If no /Volumes/ path found, use the tmpMount we specified
+	if mountPoint == "" {
+		mountPoint = tmpMount
+	}
+
+	// Ensure destDir exists
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		// Attempt to detach before returning
+		exec.Command("hdiutil", "detach", mountPoint).Run()
+		return "", fmt.Errorf("failed to create destination directory: %v", err)
+	}
+
+	// Copy all non-hidden files/directories from the volume root to destDir
+	entries, err := os.ReadDir(mountPoint)
+	if err != nil {
+		exec.Command("hdiutil", "detach", mountPoint).Run()
+		return "", fmt.Errorf("failed to read mounted volume: %v", err)
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		// Skip hidden files (names starting with '.')
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+
+		srcEntry := filepath.Join(mountPoint, name)
+		dstEntry := filepath.Join(destDir, name)
+
+		if entry.IsDir() {
+			if err := copyDir(srcEntry, dstEntry); err != nil {
+				exec.Command("hdiutil", "detach", mountPoint).Run()
+				return "", fmt.Errorf("failed to copy directory %s: %v", name, err)
+			}
+		} else {
+			if err := CopyFile(srcEntry, dstEntry); err != nil {
+				exec.Command("hdiutil", "detach", mountPoint).Run()
+				return "", fmt.Errorf("failed to copy file %s: %v", name, err)
+			}
+			// Preserve executable permissions
+			if info, err := os.Stat(srcEntry); err == nil {
+				os.Chmod(dstEntry, info.Mode())
+			}
+		}
+	}
+
+	// Detach the mounted volume
+	detachCmd := exec.Command("hdiutil", "detach", mountPoint)
+	var detachStderr bytes.Buffer
+	detachCmd.Stderr = &detachStderr
+	if err := detachCmd.Run(); err != nil {
+		return fmt.Sprintf("warning: failed to detach volume %s: %v", mountPoint, err), nil
+	}
+
+	return "", nil
+}
+
+// copyDir recursively copies a directory from src to dst
+func copyDir(src, dst string) error {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dst, srcInfo.Mode()); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else if entry.Type()&os.ModeSymlink != 0 {
+			// Handle symlinks
+			link, err := os.Readlink(srcPath)
+			if err != nil {
+				return err
+			}
+			if err := os.Symlink(link, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := CopyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+			// Preserve file permissions
+			if info, err := os.Stat(srcPath); err == nil {
+				os.Chmod(dstPath, info.Mode())
+			}
+		}
+	}
+
+	return nil
 }
 
 // FileExists checks if a path points to an existing file/directory

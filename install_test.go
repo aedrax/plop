@@ -1310,3 +1310,170 @@ func TestPropertyNonExecutableSkip(t *testing.T) {
 		t.Errorf("Non-executable file graceful skip failed: %v", err)
 	}
 }
+
+// Non-hidden file filter for DMG extraction
+func TestPropertyDMGNonHiddenFileFilter(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(seed uint64) bool {
+		// Generate a mix of hidden and non-hidden filenames from the seed
+		const safeChars = "abcdefghijklmnopqrstuvwxyz0123456789"
+		rng := seed
+		if rng == 0 {
+			rng = 1
+		}
+
+		// Simple pseudo-random number generator
+		nextRng := func() uint64 {
+			rng = rng*6364136223846793005 + 1442695040888963407
+			return rng
+		}
+
+		// Generate between 1 and 20 filenames
+		numFiles := int(nextRng()%20) + 1
+		type fileEntry struct {
+			name     string
+			isDir    bool
+			isHidden bool
+		}
+		var entries []fileEntry
+
+		for i := 0; i < numFiles; i++ {
+			// Generate a filename of length 1-10
+			nameLen := int(nextRng()%10) + 1
+			name := ""
+			for j := 0; j < nameLen; j++ {
+				name += string(safeChars[nextRng()%uint64(len(safeChars))])
+			}
+
+			// Decide if hidden (prefix with '.')
+			isHidden := nextRng()%2 == 0
+			if isHidden {
+				name = "." + name
+			}
+
+			// Decide if directory
+			isDir := nextRng()%3 == 0
+
+			// Avoid duplicate names
+			duplicate := false
+			for _, e := range entries {
+				if e.name == name {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
+
+			entries = append(entries, fileEntry{name: name, isDir: isDir, isHidden: isHidden})
+		}
+
+		if len(entries) == 0 {
+			return true // skip empty case
+		}
+
+		// Create source directory (simulating a mounted volume)
+		srcDir := t.TempDir()
+		for _, entry := range entries {
+			srcPath := filepath.Join(srcDir, entry.name)
+			if entry.isDir {
+				if err := os.MkdirAll(srcPath, 0755); err != nil {
+					t.Logf("MkdirAll failed: %v", err)
+					return false
+				}
+				// Put a file inside the directory to verify recursive copy
+				if err := os.WriteFile(filepath.Join(srcPath, "inner.txt"), []byte("content"), 0644); err != nil {
+					t.Logf("WriteFile inner failed: %v", err)
+					return false
+				}
+			} else {
+				if err := os.WriteFile(srcPath, []byte("file-content-"+entry.name), 0644); err != nil {
+					t.Logf("WriteFile failed: %v", err)
+					return false
+				}
+			}
+		}
+
+		// Apply the same filtering logic as ExtractDMG:
+		// Read entries, skip those starting with '.', copy the rest
+		destDir := t.TempDir()
+		dirEntries, err := os.ReadDir(srcDir)
+		if err != nil {
+			t.Logf("ReadDir failed: %v", err)
+			return false
+		}
+
+		for _, de := range dirEntries {
+			name := de.Name()
+			// Skip hidden files (names starting with '.')
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+
+			srcEntry := filepath.Join(srcDir, name)
+			dstEntry := filepath.Join(destDir, name)
+
+			if de.IsDir() {
+				if err := copyDir(srcEntry, dstEntry); err != nil {
+					t.Logf("copyDir failed for %s: %v", name, err)
+					return false
+				}
+			} else {
+				if err := CopyFile(srcEntry, dstEntry); err != nil {
+					t.Logf("CopyFile failed for %s: %v", name, err)
+					return false
+				}
+			}
+		}
+
+		// Verify: destination contains ONLY non-hidden files
+		destEntries, err := os.ReadDir(destDir)
+		if err != nil {
+			t.Logf("ReadDir dest failed: %v", err)
+			return false
+		}
+
+		// Build expected set of non-hidden entries
+		expectedNonHidden := make(map[string]bool)
+		for _, entry := range entries {
+			if !entry.isHidden {
+				expectedNonHidden[entry.name] = true
+			}
+		}
+
+		// Check that no hidden files are present in destination
+		for _, de := range destEntries {
+			if strings.HasPrefix(de.Name(), ".") {
+				t.Logf("Hidden file %q found in destination", de.Name())
+				return false
+			}
+		}
+
+		// Check that all non-hidden files are present
+		gotNames := make(map[string]bool)
+		for _, de := range destEntries {
+			gotNames[de.Name()] = true
+		}
+
+		for name := range expectedNonHidden {
+			if !gotNames[name] {
+				t.Logf("Expected non-hidden entry %q not found in destination", name)
+				return false
+			}
+		}
+
+		// Check that destination has exactly the expected count
+		if len(destEntries) != len(expectedNonHidden) {
+			t.Logf("Destination has %d entries, expected %d", len(destEntries), len(expectedNonHidden))
+			return false
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("Non-hidden file filter for DMG extraction failed: %v", err)
+	}
+}
