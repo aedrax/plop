@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"debug/elf"
+	"debug/macho"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -163,6 +165,27 @@ func IsELF(path string) (bool, error) {
 	return true, nil
 }
 
+// IsMachO checks if a file is a valid macOS Mach-O executable (32-bit, 64-bit, or universal/fat binary)
+func IsMachO(path string) (bool, error) {
+	// Try opening as a fat (universal) binary first, this handles the 0xCAFEBABE magic
+	// which could also be a Java .class file, so OpenFat validates the fat header structure
+	fatFile, err := macho.OpenFat(path)
+	if err == nil {
+		fatFile.Close()
+		return true, nil
+	}
+
+	// Fall back to standard Mach-O open (handles 0xFEEDFACE 32-bit and 0xFEEDFACF 64-bit)
+	f, err := macho.Open(path)
+	if err == nil {
+		f.Close()
+		return true, nil
+	}
+
+	// Not a Mach-O file, return false with no error (matches IsELF pattern)
+	return false, nil
+}
+
 // IsScript checks if a file begins with a shebang launcher sequence
 func IsScript(path string) (bool, error) {
 	file, err := os.Open(path)
@@ -178,6 +201,42 @@ func IsScript(path string) (bool, error) {
 	}
 
 	return string(buf) == "#!", nil
+}
+
+// IsExecutable checks if a file is a platform-appropriate executable binary.
+// On macOS: checks Mach-O format. On Linux: checks ELF format.
+// On both: checks for shebang scripts.
+// Returns (isExecutable bool, isNativeBinary bool, err error)
+func IsExecutable(path string) (bool, bool, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		ok, err := IsMachO(path)
+		if err != nil {
+			return false, false, err
+		}
+		if ok {
+			return true, true, nil
+		}
+	case "linux":
+		ok, err := IsELF(path)
+		if err != nil {
+			return false, false, err
+		}
+		if ok {
+			return true, true, nil
+		}
+	}
+
+	// On both platforms, check for shebang scripts
+	ok, err := IsScript(path)
+	if err != nil {
+		return false, false, err
+	}
+	if ok {
+		return true, false, nil
+	}
+
+	return false, false, nil
 }
 
 // FileExists checks if a path points to an existing file/directory

@@ -1172,3 +1172,141 @@ func TestPropertyDirectoryAutoCreation(t *testing.T) {
 		t.Errorf("Directory auto-creation on first access failed: %v", err)
 	}
 }
+
+// Shebang detection universality
+func TestPropertyShebangDetection(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(content []byte) bool {
+		// Prepend shebang to random content
+		shebangContent := append([]byte("#!"), content...)
+
+		// Write to a temp file
+		tempDir := t.TempDir()
+		filePath := filepath.Join(tempDir, "script")
+		err := os.WriteFile(filePath, shebangContent, 0644)
+		if err != nil {
+			t.Logf("WriteFile failed: %v", err)
+			return false
+		}
+
+		// IsScript must return true for any file starting with #!
+		isScript, err := IsScript(filePath)
+		if err != nil {
+			t.Logf("IsScript returned error: %v", err)
+			return false
+		}
+		if !isScript {
+			t.Logf("IsScript returned false for file starting with #! (content len=%d)", len(content))
+			return false
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("Shebang detection universality failed: %v", err)
+	}
+}
+
+// Non-executable file graceful skip
+func TestPropertyNonExecutableSkip(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(content []byte) bool {
+		// Ensure content does NOT start with any recognized magic bytes:
+		// - ELF magic: 0x7F 0x45 0x4C 0x46
+		// - Mach-O 32-bit: 0xFE 0xED 0xFA 0xCE
+		// - Mach-O 64-bit: 0xFE 0xED 0xFA 0xCF
+		// - Universal/fat: 0xCA 0xFE 0xBA 0xBE
+		// - Shebang: 0x23 0x21 (#!)
+		if len(content) < 2 {
+			// Files shorter than 2 bytes can't match shebang, but could be empty
+			// Ensure they don't accidentally match anything
+			content = []byte{0x00, 0x00}
+		}
+
+		// Check and reject if content starts with shebang
+		if content[0] == '#' && content[1] == '!' {
+			content[0] = 0x00 // neutralize shebang
+		}
+
+		// Check and reject if content starts with ELF magic
+		if len(content) >= 4 && content[0] == 0x7F && content[1] == 0x45 && content[2] == 0x4C && content[3] == 0x46 {
+			content[0] = 0x00 // neutralize ELF magic
+		}
+
+		// Check and reject if content starts with Mach-O magic (0xFEEDFACE or 0xFEEDFACF)
+		if len(content) >= 4 && content[0] == 0xFE && content[1] == 0xED && content[2] == 0xFA && (content[3] == 0xCE || content[3] == 0xCF) {
+			content[0] = 0x00 // neutralize Mach-O magic
+		}
+
+		// Check and reject if content starts with universal binary magic (0xCAFEBABE)
+		if len(content) >= 4 && content[0] == 0xCA && content[1] == 0xFE && content[2] == 0xBA && content[3] == 0xBE {
+			content[0] = 0x00 // neutralize fat binary magic
+		}
+
+		// Write to a temp file
+		tempDir := t.TempDir()
+		filePath := filepath.Join(tempDir, "nonexec")
+		err := os.WriteFile(filePath, content, 0644)
+		if err != nil {
+			t.Logf("WriteFile failed: %v", err)
+			return false
+		}
+
+		// IsELF must return (false, nil)
+		isElf, err := IsELF(filePath)
+		if err != nil {
+			t.Logf("IsELF returned error: %v", err)
+			return false
+		}
+		if isElf {
+			t.Logf("IsELF returned true for non-ELF content")
+			return false
+		}
+
+		// IsMachO must return (false, nil)
+		isMacho, err := IsMachO(filePath)
+		if err != nil {
+			t.Logf("IsMachO returned error: %v", err)
+			return false
+		}
+		if isMacho {
+			t.Logf("IsMachO returned true for non-Mach-O content")
+			return false
+		}
+
+		// IsScript must return (false, nil)
+		isScript, err := IsScript(filePath)
+		if err != nil {
+			t.Logf("IsScript returned error: %v", err)
+			return false
+		}
+		if isScript {
+			t.Logf("IsScript returned true for non-shebang content")
+			return false
+		}
+
+		// IsExecutable must return (false, false, nil)
+		isExec, isNative, err := IsExecutable(filePath)
+		if err != nil {
+			t.Logf("IsExecutable returned error: %v", err)
+			return false
+		}
+		if isExec {
+			t.Logf("IsExecutable returned isExecutable=true for non-executable content")
+			return false
+		}
+		if isNative {
+			t.Logf("IsExecutable returned isNativeBinary=true for non-executable content")
+			return false
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("Non-executable file graceful skip failed: %v", err)
+	}
+}

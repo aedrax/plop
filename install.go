@@ -15,9 +15,9 @@ import (
 
 // ExecutableCandidate holds details of a detected runnable binary or script
 type ExecutableCandidate struct {
-	FullPath string
-	SubPath  string
-	IsELF    bool
+	FullPath       string
+	SubPath        string
+	IsNativeBinary bool
 }
 
 // DeduceAppDetails extracts a clean app name and version from an archive filename
@@ -453,16 +453,15 @@ func scanArchiveContents(sourceRoot string, isAppImage bool) (executables []Exec
 		}
 
 		if !isAppImage && info.Mode().IsRegular() && (info.Mode()&0111 != 0) {
-			isElf, _ := IsELF(path)
-			isScript, _ := IsScript(path)
+			isExec, isNativeBin, _ := IsExecutable(path)
 
-			if isElf || isScript {
+			if isExec {
 				fileName := strings.ToLower(info.Name())
 				if !strings.HasPrefix(fileName, "lib") || !strings.Contains(fileName, ".so") {
 					executables = append(executables, ExecutableCandidate{
-						FullPath: path,
-						SubPath:  sub,
-						IsELF:    isElf,
+						FullPath:       path,
+						SubPath:        sub,
+						IsNativeBinary: isNativeBin,
 					})
 				}
 			}
@@ -549,8 +548,8 @@ func selectTargetBinaries(appName string, executables []ExecutableCandidate, reg
 			fmt.Println("  (You can enter a single number, comma-separated numbers like '1,3', or 'all')")
 			for i, exe := range executables {
 				binaryType := "Launch Script"
-				if exe.IsELF {
-					binaryType = "ELF Executable"
+				if exe.IsNativeBinary {
+					binaryType = "Native Binary"
 				}
 				isPrev := false
 				for _, old := range oldSelected {
@@ -810,11 +809,10 @@ func detectFormat(archivePath string) (isAppImage bool, isRawBinary bool) {
 	if isAppImage {
 		return true, false
 	}
-	isElf, _ := IsELF(archivePath)
-	isScript, _ := IsScript(archivePath)
+	isExec, _, _ := IsExecutable(archivePath)
 	ext := strings.ToLower(filepath.Ext(archivePath))
 	isArchiveExt := ext == ".zip" || ext == ".tar" || ext == ".gz" || ext == ".xz" || ext == ".bz2" || ext == ".tgz" || ext == ".txz" || ext == ".tbz2"
-	if (isElf || isScript) && !isArchiveExt {
+	if isExec && !isArchiveExt {
 		return false, true
 	}
 	return false, false
@@ -833,18 +831,18 @@ func scanInstallCandidates(sourceRoot, archivePath, targetAppDir, appName string
 	if isRawBinary {
 		binaryBaseName := filepath.Base(archivePath)
 		targetBinaryPath := filepath.Join(targetAppDir, binaryBaseName)
-		isElf, _ := IsELF(targetBinaryPath)
+		_, isNativeBin, _ := IsExecutable(targetBinaryPath)
 		executables = append(executables, ExecutableCandidate{
-			FullPath: targetBinaryPath,
-			SubPath:  binaryBaseName,
-			IsELF:    isElf,
+			FullPath:       targetBinaryPath,
+			SubPath:        binaryBaseName,
+			IsNativeBinary: isNativeBin,
 		})
 	} else if isAppImage {
 		targetAppImagePath := filepath.Join(targetAppDir, appName+".AppImage")
 		executables = append(executables, ExecutableCandidate{
-			FullPath: targetAppImagePath,
-			SubPath:  appName + ".AppImage",
-			IsELF:    true,
+			FullPath:       targetAppImagePath,
+			SubPath:        appName + ".AppImage",
+			IsNativeBinary: true,
 		})
 		execs, desktops, imgs, scanErr := scanArchiveContents(sourceRoot, isAppImage)
 		if scanErr == nil {
