@@ -863,6 +863,11 @@ func scanInstallCandidates(sourceRoot, archivePath, targetAppDir, appName string
 }
 
 func handleDesktopLauncher(appName, symlinkPath, selectedIcon, targetAppDir, sourceRoot string, desktopFiles []string, isAppImage bool, config *Config) (desktopPath string, err error) {
+	if IsDarwin() {
+		PrintInfo("Skipping desktop launcher (not applicable on macOS)")
+		return "", nil
+	}
+
 	isGUI := true
 	createLauncher := true
 	if config.DefaultGUI != nil {
@@ -899,12 +904,16 @@ func InstallApp(sourcePathOrURL string, options InstallOptions, config *Config, 
 		return err
 	}
 
+	isAppImage, isRawBinary := detectFormat(archivePath)
+	if isAppImage && IsDarwin() {
+		return fmt.Errorf("AppImage is not supported on macOS")
+	}
+
 	targetAppDir, err := handleExistingInstallation(appName, config)
 	if err != nil {
 		return err
 	}
 
-	isAppImage, isRawBinary := detectFormat(archivePath)
 	customInstallScript := resolveCustomInstallScript(options, config, isAppImage, isRawBinary)
 
 	sourceRoot, customInstallExecuted, cleanupDir, err := extractSourceAndRunBuild(

@@ -75,23 +75,26 @@ func UninstallApp(appName string, config *Config, reg *Registry) error {
 		}
 	}
 
-	// Remove desktop launcher
-	if app.DesktopPath != "" && FileExists(app.DesktopPath) {
-		PrintInfo("Removing desktop launcher entry...")
-		err := os.Remove(app.DesktopPath)
-		if err != nil {
-			PrintWarning("Could not delete desktop file '%s': %v", app.DesktopPath, err)
+	// Remove desktop launcher (not applicable on macOS)
+	if !IsDarwin() {
+		if app.DesktopPath != "" && FileExists(app.DesktopPath) {
+			PrintInfo("Removing desktop launcher entry...")
+			err := os.Remove(app.DesktopPath)
+			if err != nil {
+				PrintWarning("Could not delete desktop file '%s': %v", app.DesktopPath, err)
+			}
 		}
 	}
 
-	// Remove custom icon
-	// Only delete the icon if it points to a local custom file in our icons directory
-	iconsDir := ExpandTilde(config.IconsDir)
-	if app.IconPath != "" && strings.HasPrefix(app.IconPath, iconsDir) && FileExists(app.IconPath) {
-		PrintInfo("Removing custom icon file...")
-		err := os.Remove(app.IconPath)
-		if err != nil {
-			PrintWarning("Could not delete icon file '%s': %v", app.IconPath, err)
+	// Remove custom icon (not applicable on macOS)
+	if !IsDarwin() {
+		iconsDir := ExpandTilde(config.IconsDir)
+		if app.IconPath != "" && strings.HasPrefix(app.IconPath, iconsDir) && FileExists(app.IconPath) {
+			PrintInfo("Removing custom icon file...")
+			err := os.Remove(app.IconPath)
+			if err != nil {
+				PrintWarning("Could not delete icon file '%s': %v", app.IconPath, err)
+			}
 		}
 	}
 

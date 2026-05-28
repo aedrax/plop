@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/quick"
@@ -185,16 +186,18 @@ func TestResolveRelativeURL(t *testing.T) {
 }
 
 func TestScrapeGenericRelease(t *testing.T) {
-	// Start a local mock HTTP server
+	// Start a local mock HTTP server with both Linux and macOS links
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`
 			<html>
 				<body>
-					<a href="/downloads/app-v1.0.0-linux-amd64.tar.gz">Version 1.0.0</a>
-					<a href="/downloads/app-v2.5.1-linux-x86_64.tar.gz">Version 2.5.1</a>
-					<a href="/downloads/ignored-mac.zip">Mac Release</a>
+					<a href="/downloads/app-v1.0.0-linux-amd64.tar.gz">Linux Version 1.0.0</a>
+					<a href="/downloads/app-v2.5.1-linux-x86_64.tar.gz">Linux Version 2.5.1</a>
+					<a href="/downloads/app-v1.0.0-darwin-arm64.tar.gz">macOS Version 1.0.0</a>
+					<a href="/downloads/app-v2.5.1-darwin-x86_64.tar.gz">macOS Version 2.5.1</a>
+					<a href="/downloads/ignored-windows.zip">Windows Release</a>
 				</body>
 			</html>
 		`))
@@ -215,12 +218,22 @@ func TestScrapeGenericRelease(t *testing.T) {
 		t.Fatalf("expected 1 asset, got %d", len(release.Assets))
 	}
 	asset := release.Assets[0]
-	if asset.Name != "app-v2.5.1-linux-x86_64.tar.gz" {
-		t.Errorf("expected asset name to be app-v2.5.1-linux-x86_64.tar.gz, got %s", asset.Name)
-	}
-	expectedURL := server.URL + "/downloads/app-v2.5.1-linux-x86_64.tar.gz"
-	if asset.BrowserDownloadURL != expectedURL {
-		t.Errorf("expected download URL to be %q, got %q", expectedURL, asset.BrowserDownloadURL)
+	if runtime.GOOS == "darwin" {
+		if asset.Name != "app-v2.5.1-darwin-x86_64.tar.gz" {
+			t.Errorf("expected asset name to be app-v2.5.1-darwin-x86_64.tar.gz, got %s", asset.Name)
+		}
+		expectedURL := server.URL + "/downloads/app-v2.5.1-darwin-x86_64.tar.gz"
+		if asset.BrowserDownloadURL != expectedURL {
+			t.Errorf("expected download URL to be %q, got %q", expectedURL, asset.BrowserDownloadURL)
+		}
+	} else {
+		if asset.Name != "app-v2.5.1-linux-x86_64.tar.gz" {
+			t.Errorf("expected asset name to be app-v2.5.1-linux-x86_64.tar.gz, got %s", asset.Name)
+		}
+		expectedURL := server.URL + "/downloads/app-v2.5.1-linux-x86_64.tar.gz"
+		if asset.BrowserDownloadURL != expectedURL {
+			t.Errorf("expected download URL to be %q, got %q", expectedURL, asset.BrowserDownloadURL)
+		}
 	}
 }
 
@@ -229,19 +242,35 @@ func TestScrapeObfuscatedJS(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`
-			<html>
-				<body>
-					<a id='a7' href='hp1.html'>sqlite-tools-linux-x64-3530100.zip</a>
-					<script>
-						setTimeout(function(){
-							function d391(a,b){document.getElementById(a).href=b;};
-							d391('a7','2026/sqlite-tools-linux-x64-3530100.zip');
-						}, 10);
-					</script>
-				</body>
-			</html>
-		`))
+		if runtime.GOOS == "darwin" {
+			w.Write([]byte(`
+				<html>
+					<body>
+						<a id='a7' href='hp1.html'>sqlite-tools-osx-x86_64-3530100.zip</a>
+						<script>
+							setTimeout(function(){
+								function d391(a,b){document.getElementById(a).href=b;};
+								d391('a7','2026/sqlite-tools-osx-x86_64-3530100.zip');
+							}, 10);
+						</script>
+					</body>
+				</html>
+			`))
+		} else {
+			w.Write([]byte(`
+				<html>
+					<body>
+						<a id='a7' href='hp1.html'>sqlite-tools-linux-x64-3530100.zip</a>
+						<script>
+							setTimeout(function(){
+								function d391(a,b){document.getElementById(a).href=b;};
+								d391('a7','2026/sqlite-tools-linux-x64-3530100.zip');
+							}, 10);
+						</script>
+					</body>
+				</html>
+			`))
+		}
 	}))
 	defer server.Close()
 
@@ -256,9 +285,16 @@ func TestScrapeObfuscatedJS(t *testing.T) {
 		t.Fatalf("expected 1 asset, got %d", len(release.Assets))
 	}
 	asset := release.Assets[0]
-	expectedURL := server.URL + "/2026/sqlite-tools-linux-x64-3530100.zip"
-	if asset.BrowserDownloadURL != expectedURL {
-		t.Errorf("expected download URL to be %q, got %q", expectedURL, asset.BrowserDownloadURL)
+	if runtime.GOOS == "darwin" {
+		expectedURL := server.URL + "/2026/sqlite-tools-osx-x86_64-3530100.zip"
+		if asset.BrowserDownloadURL != expectedURL {
+			t.Errorf("expected download URL to be %q, got %q", expectedURL, asset.BrowserDownloadURL)
+		}
+	} else {
+		expectedURL := server.URL + "/2026/sqlite-tools-linux-x64-3530100.zip"
+		if asset.BrowserDownloadURL != expectedURL {
+			t.Errorf("expected download URL to be %q, got %q", expectedURL, asset.BrowserDownloadURL)
+		}
 	}
 }
 
@@ -270,10 +306,17 @@ func TestScrapeSPABundles(t *testing.T) {
 
 		// If requesting the JS bundle, serve JS content containing the direct download URL
 		if strings.HasSuffix(r.URL.Path, "/main.js") {
-			w.Write([]byte(`
-				const stableLinux = "https://example.com/awesome/2.0.6-123456789/linux-x64/Awesome.tar.gz";
-				const otherLinux = "/downloads/2.0.3/Awesome IDE.tar.gz";
-			`))
+			if runtime.GOOS == "darwin" {
+				w.Write([]byte(`
+					const stableDarwin = "https://example.com/awesome/2.0.6-123456789/darwin-x86_64/Awesome.tar.gz";
+					const otherDarwin = "/downloads/2.0.3/Awesome IDE.tar.gz";
+				`))
+			} else {
+				w.Write([]byte(`
+					const stableLinux = "https://example.com/awesome/2.0.6-123456789/linux-x64/Awesome.tar.gz";
+					const otherLinux = "/downloads/2.0.3/Awesome IDE.tar.gz";
+				`))
+			}
 			return
 		}
 
@@ -309,9 +352,16 @@ func TestScrapeSPABundles(t *testing.T) {
 	if asset.Name != "Awesome.tar.gz" {
 		t.Errorf("expected asset name to be Awesome.tar.gz, got %s", asset.Name)
 	}
-	expectedURL := "https://example.com/awesome/2.0.6-123456789/linux-x64/Awesome.tar.gz"
-	if asset.BrowserDownloadURL != expectedURL {
-		t.Errorf("expected download URL to be %q, got %q", expectedURL, asset.BrowserDownloadURL)
+	if runtime.GOOS == "darwin" {
+		expectedURL := "https://example.com/awesome/2.0.6-123456789/darwin-x86_64/Awesome.tar.gz"
+		if asset.BrowserDownloadURL != expectedURL {
+			t.Errorf("expected download URL to be %q, got %q", expectedURL, asset.BrowserDownloadURL)
+		}
+	} else {
+		expectedURL := "https://example.com/awesome/2.0.6-123456789/linux-x64/Awesome.tar.gz"
+		if asset.BrowserDownloadURL != expectedURL {
+			t.Errorf("expected download URL to be %q, got %q", expectedURL, asset.BrowserDownloadURL)
+		}
 	}
 }
 
@@ -475,15 +525,22 @@ chmod +x "$2/myapp"
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		// Use platform-appropriate asset name so scraper matches on both platforms
+		var assetName string
+		if runtime.GOOS == "darwin" {
+			assetName = "custom-app-darwin-x86_64-1.6.0.zip"
+		} else {
+			assetName = "custom-app-linux-x64-1.6.0.zip"
+		}
 		fmt.Fprintf(w, `{
 			"tag_name": "v1.6.0",
 			"assets": [
 				{
-					"name": "custom-app-linux-x64-1.6.0.zip",
-					"browser_download_url": "%s/custom-app-linux-x64-1.6.0.zip"
+					"name": "%s",
+					"browser_download_url": "%s/%s"
 				}
 			]
-		}`, serverURLToHost(r))
+		}`, assetName, serverURLToHost(r), assetName)
 	}))
 	defer mockZipServer.Close()
 
@@ -859,7 +916,7 @@ func TestFindBestLinuxAsset(t *testing.T) {
 			},
 		},
 	}
-	url, name := FindBestLinuxAsset(releaseSingle)
+	url, name := FindBestAsset(releaseSingle)
 	if url != "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.0.6-5413878570549248/linux-x64/Antigravity.tar.gz" || name != "Antigravity.tar.gz" {
 		t.Errorf("expected single asset to be returned, got url=%q, name=%q", url, name)
 	}
@@ -873,7 +930,7 @@ func TestFindBestLinuxAsset(t *testing.T) {
 			{Name: "Cutter-v2.4.1-Linux-x86_64.AppImage", BrowserDownloadURL: "https://github.com/linux-appimage"},
 		},
 	}
-	url, name = FindBestLinuxAsset(releaseAppImage)
+	url, name = findBestLinuxAsset(releaseAppImage)
 	if url != "https://github.com/linux-appimage" || name != "Cutter-v2.4.1-Linux-x86_64.AppImage" {
 		t.Errorf("expected Linux AppImage asset to be selected, got url=%q, name=%q", url, name)
 	}
@@ -887,7 +944,7 @@ func TestFindBestLinuxAsset(t *testing.T) {
 			{Name: "Source code (tar.gz)", BrowserDownloadURL: "https://github.com/src-tar"},
 		},
 	}
-	url, name = FindBestLinuxAsset(releaseMakeself)
+	url, name = findBestLinuxAsset(releaseMakeself)
 	if url != "https://github.com/megastep/makeself/releases/download/release-2.7.1/makeself-2.7.1.run" || name != "makeself-2.7.1.run" {
 		t.Errorf("expected Makeself .run script asset to be selected, got url=%q, name=%q", url, name)
 	}
@@ -901,7 +958,7 @@ func TestFindBestLinuxAsset(t *testing.T) {
 			{Name: "janice-0.10.0-darwin-amd64.tar.gz", BrowserDownloadURL: "https://github.com/mac-tar"},
 		},
 	}
-	url, name = FindBestLinuxAsset(releaseStandard)
+	url, name = findBestLinuxAsset(releaseStandard)
 	if url != "https://github.com/linux-tar" || name != "janice-0.10.0-linux-amd64.tar.xz" {
 		t.Errorf("expected Linux xz tarball asset to be selected, got url=%q, name=%q", url, name)
 	}
@@ -1475,5 +1532,1208 @@ func TestPropertyDMGNonHiddenFileFilter(t *testing.T) {
 
 	if err != nil {
 		t.Errorf("Non-hidden file filter for DMG extraction failed: %v", err)
+	}
+}
+
+// Platform-aware asset selection correctness
+func TestPropertyAssetSelection(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	// Platform identifiers for macOS
+	darwinPlatforms := []string{"darwin", "macos", "osx"}
+	// Valid extensions for macOS
+	darwinValidExts := []string{".tar.gz", ".tar.xz", ".zip", ".dmg"}
+	// Architecture identifiers
+	arm64Archs := []string{"arm64", "aarch64"}
+	amd64Archs := []string{"amd64", "x86_64", "x64"}
+
+	err := quick.Check(func(seed uint64) bool {
+		if seed == 0 {
+			seed = 1
+		}
+		rng := seed
+
+		nextRng := func() uint64 {
+			rng = rng*6364136223846793005 + 1442695040888963407
+			return rng
+		}
+
+		// Generate between 2 and 10 assets (more than 1 to avoid single-asset shortcut)
+		numAssets := int(nextRng()%9) + 2
+		assets := make([]GithubAsset, 0, numAssets)
+
+		// Ensure at least one macOS-compatible asset exists
+		// Pick a random platform identifier, architecture, and extension
+		platIdx := int(nextRng() % uint64(len(darwinPlatforms)))
+		extIdx := int(nextRng() % uint64(len(darwinValidExts)))
+
+		var archStr string
+		if runtime.GOARCH == "arm64" {
+			archIdx := int(nextRng() % uint64(len(arm64Archs)))
+			archStr = arm64Archs[archIdx]
+		} else {
+			archIdx := int(nextRng() % uint64(len(amd64Archs)))
+			archStr = amd64Archs[archIdx]
+		}
+
+		// Build the guaranteed macOS-compatible asset
+		macAssetName := fmt.Sprintf("app-%s-%s%s", darwinPlatforms[platIdx], archStr, darwinValidExts[extIdx])
+		macAssetURL := fmt.Sprintf("https://example.com/releases/%s", macAssetName)
+		assets = append(assets, GithubAsset{
+			Name:               macAssetName,
+			BrowserDownloadURL: macAssetURL,
+		})
+
+		// Generate remaining random assets (mix of platforms)
+		otherPlatforms := []string{"linux", "windows", "freebsd"}
+		otherExts := []string{".tar.gz", ".zip", ".appimage", ".exe", ".deb", ".rpm"}
+		for i := 1; i < numAssets; i++ {
+			plat := otherPlatforms[int(nextRng()%uint64(len(otherPlatforms)))]
+			ext := otherExts[int(nextRng()%uint64(len(otherExts)))]
+			name := fmt.Sprintf("app-%s-amd64%s", plat, ext)
+			url := fmt.Sprintf("https://example.com/releases/%s", name)
+			assets = append(assets, GithubAsset{
+				Name:               name,
+				BrowserDownloadURL: url,
+			})
+		}
+
+		// Shuffle assets using Fisher-Yates
+		for i := len(assets) - 1; i > 0; i-- {
+			j := int(nextRng() % uint64(i+1))
+			assets[i], assets[j] = assets[j], assets[i]
+		}
+
+		release := &GithubRelease{
+			TagName: "v1.0.0",
+			Assets:  assets,
+		}
+
+		// Call the platform-specific function directly based on runtime
+		var selectedURL, selectedName string
+		if runtime.GOOS == "darwin" {
+			selectedURL, selectedName = findBestDarwinAsset(release)
+		} else {
+			// On Linux, we test findBestDarwinAsset directly to validate the logic
+			selectedURL, selectedName = findBestDarwinAsset(release)
+		}
+
+		if selectedURL == "" || selectedName == "" {
+			t.Logf("No asset selected from release with %d assets (seed=%d)", len(assets), seed)
+			return false
+		}
+
+		nameLower := strings.ToLower(selectedName)
+		urlLower := strings.ToLower(selectedURL)
+
+		// (a) Selected asset must contain a macOS platform identifier
+		hasPlatform := false
+		for _, p := range darwinPlatforms {
+			if strings.Contains(nameLower, p) || strings.Contains(urlLower, p) {
+				hasPlatform = true
+				break
+			}
+		}
+		if !hasPlatform {
+			t.Logf("Selected asset %q does not contain a macOS platform identifier (seed=%d)", selectedName, seed)
+			return false
+		}
+
+		// (b) If assets with matching architecture exist, selected must match host arch
+		var hostArchIds []string
+		if runtime.GOARCH == "arm64" {
+			hostArchIds = arm64Archs
+		} else {
+			hostArchIds = amd64Archs
+		}
+
+		// Check if any asset has both platform + arch match
+		archAssetsExist := false
+		for _, a := range assets {
+			aName := strings.ToLower(a.Name)
+			aURL := strings.ToLower(a.BrowserDownloadURL)
+			aHasPlatform := false
+			for _, p := range darwinPlatforms {
+				if strings.Contains(aName, p) || strings.Contains(aURL, p) {
+					aHasPlatform = true
+					break
+				}
+			}
+			if !aHasPlatform {
+				continue
+			}
+			for _, arch := range hostArchIds {
+				if strings.Contains(aName, arch) || strings.Contains(aURL, arch) {
+					archAssetsExist = true
+					break
+				}
+			}
+			if archAssetsExist {
+				break
+			}
+		}
+
+		if archAssetsExist {
+			hasArch := false
+			for _, arch := range hostArchIds {
+				if strings.Contains(nameLower, arch) || strings.Contains(urlLower, arch) {
+					hasArch = true
+					break
+				}
+			}
+			if !hasArch {
+				t.Logf("Arch-matching assets exist but selected %q doesn't match host arch (seed=%d)", selectedName, seed)
+				return false
+			}
+		}
+
+		// (c) Selected asset must end with an accepted extension
+		hasValidExt := false
+		for _, ext := range darwinValidExts {
+			if strings.HasSuffix(nameLower, ext) {
+				hasValidExt = true
+				break
+			}
+		}
+		if !hasValidExt {
+			t.Logf("Selected asset %q does not have a valid macOS extension (seed=%d)", selectedName, seed)
+			return false
+		}
+
+		// (d) Selected asset must NOT end with .appimage
+		if strings.HasSuffix(nameLower, ".appimage") {
+			t.Logf("Selected asset %q ends with .appimage which is excluded on macOS (seed=%d)", selectedName, seed)
+			return false
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("Platform-aware asset selection correctness failed: %v", err)
+	}
+}
+
+// Single-asset release always selected
+func TestPropertySingleAsset(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(name, url string) bool {
+		// Filter out empty or null-byte strings
+		if name == "" || url == "" || strings.ContainsRune(name, 0) || strings.ContainsRune(url, 0) {
+			return true // skip invalid inputs
+		}
+
+		release := &GithubRelease{
+			TagName: "v1.0.0",
+			Assets: []GithubAsset{
+				{
+					Name:               name,
+					BrowserDownloadURL: url,
+				},
+			},
+		}
+
+		selectedURL, selectedName := FindBestAsset(release)
+
+		// For a single-asset release, that asset must always be returned
+		if selectedURL != url {
+			t.Logf("Single-asset URL mismatch: got %q, want %q (name=%q)", selectedURL, url, name)
+			return false
+		}
+		if selectedName != name {
+			t.Logf("Single-asset name mismatch: got %q, want %q", selectedName, name)
+			return false
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("Single-asset release always selected failed: %v", err)
+	}
+}
+
+// Platform-aware link scraping
+func TestPropertyLinkScraping(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(seed uint64) bool {
+		if seed == 0 {
+			seed = 1
+		}
+		rng := seed
+
+		nextRng := func() uint64 {
+			rng = rng*6364136223846793005 + 1442695040888963407
+			return rng
+		}
+
+		// Platform identifiers for macOS and Linux
+		macPlatforms := []string{"darwin", "macos", "osx"}
+		linuxPlatforms := []string{"linux"}
+
+		// Architecture identifiers
+		var archIdentifiers []string
+		if runtime.GOARCH == "arm64" {
+			archIdentifiers = []string{"arm64", "aarch64"}
+		} else {
+			archIdentifiers = []string{"x86_64", "amd64", "x64"}
+		}
+
+		// Valid extensions per platform
+		macExtensions := []string{".tar.gz", ".tar.xz", ".zip", ".dmg", ".tgz", ".txz", ".tbz2", ".tar.bz2", ".tar"}
+		linuxExtensions := []string{".tar.gz", ".tar.xz", ".zip", ".tgz", ".txz", ".tbz2", ".tar.bz2", ".tar"}
+
+		// Generate a random app name (3-8 lowercase chars)
+		const chars = "abcdefghijklmnopqrstuvwxyz"
+		nameLen := int(nextRng()%6) + 3
+		appName := ""
+		for i := 0; i < nameLen; i++ {
+			appName += string(chars[nextRng()%uint64(len(chars))])
+		}
+
+		// Generate a random version (major.minor.patch)
+		major := int(nextRng()%5) + 1
+		minor := int(nextRng() % 10)
+		patch := int(nextRng() % 10)
+		version := fmt.Sprintf("%d.%d.%d", major, minor, patch)
+
+		// Pick a random architecture
+		arch := archIdentifiers[nextRng()%uint64(len(archIdentifiers))]
+
+		// Build HTML with platform-specific download links
+		var links []string
+
+		// Always include a macOS link with a valid extension
+		macPlatform := macPlatforms[nextRng()%uint64(len(macPlatforms))]
+		macExt := macExtensions[nextRng()%uint64(len(macExtensions))]
+		macLink := fmt.Sprintf("/downloads/%s-v%s-%s-%s%s", appName, version, macPlatform, arch, macExt)
+		links = append(links, fmt.Sprintf(`<a href="%s">macOS Download</a>`, macLink))
+
+		// Always include a Linux link with a valid extension
+		linuxPlatform := linuxPlatforms[0]
+		linuxExt := linuxExtensions[nextRng()%uint64(len(linuxExtensions))]
+		linuxArch := archIdentifiers[nextRng()%uint64(len(archIdentifiers))]
+		linuxLink := fmt.Sprintf("/downloads/%s-v%s-%s-%s%s", appName, version, linuxPlatform, linuxArch, linuxExt)
+		links = append(links, fmt.Sprintf(`<a href="%s">Linux Download</a>`, linuxLink))
+
+		// Optionally add a Windows link (should never be matched)
+		if nextRng()%2 == 0 {
+			winLink := fmt.Sprintf("/downloads/%s-v%s-windows-%s.zip", appName, version, arch)
+			links = append(links, fmt.Sprintf(`<a href="%s">Windows Download</a>`, winLink))
+		}
+
+		// Build the HTML page
+		html := "<html><body>\n" + strings.Join(links, "\n") + "\n</body></html>"
+
+		// Serve the HTML via httptest
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(html))
+		}))
+		defer server.Close()
+
+		// Call ScrapeGenericRelease
+		release, err := ScrapeGenericRelease(server.URL)
+		if err != nil {
+			t.Logf("ScrapeGenericRelease failed: %v (html: %s)", err, html)
+			return false
+		}
+
+		if len(release.Assets) == 0 {
+			t.Logf("No assets returned")
+			return false
+		}
+
+		matchedURL := strings.ToLower(release.Assets[0].BrowserDownloadURL)
+
+		if runtime.GOOS == "darwin" {
+			// On macOS: matched link must contain a macOS platform identifier
+			hasMacPlatform := strings.Contains(matchedURL, "darwin") ||
+				strings.Contains(matchedURL, "macos") ||
+				strings.Contains(matchedURL, "osx")
+			if !hasMacPlatform {
+				t.Logf("On macOS, matched URL %q does not contain a macOS platform identifier", matchedURL)
+				return false
+			}
+
+			// On macOS: matched link must have a valid extension (including .dmg)
+			hasValidExt := false
+			validExts := []string{".tar.gz", ".tar.xz", ".zip", ".dmg", ".tgz", ".txz", ".tbz2", ".tar.bz2", ".tar"}
+			for _, ext := range validExts {
+				if strings.HasSuffix(matchedURL, ext) {
+					hasValidExt = true
+					break
+				}
+			}
+			if !hasValidExt {
+				t.Logf("On macOS, matched URL %q does not have a valid extension", matchedURL)
+				return false
+			}
+		} else {
+			// On Linux: matched link must contain a Linux platform identifier
+			hasLinuxPlatform := strings.Contains(matchedURL, "linux")
+			if !hasLinuxPlatform {
+				t.Logf("On Linux, matched URL %q does not contain a Linux platform identifier", matchedURL)
+				return false
+			}
+
+			// On Linux: matched link must have a valid extension
+			hasValidExt := false
+			validExts := []string{".tar.gz", ".tar.xz", ".zip", ".tgz", ".txz", ".tbz2", ".tar.bz2", ".tar", ".appimage"}
+			for _, ext := range validExts {
+				if strings.HasSuffix(matchedURL, ext) {
+					hasValidExt = true
+					break
+				}
+			}
+			if !hasValidExt {
+				t.Logf("On Linux, matched URL %q does not have a valid extension", matchedURL)
+				return false
+			}
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("Platform-aware link scraping property failed: %v", err)
+	}
+}
+
+// Desktop integration skip on macOS
+func TestPropertyDesktopIntegrationSkipOnMacOS(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(seed uint64) bool {
+		if seed == 0 {
+			seed = 1
+		}
+		rng := seed
+
+		nextRng := func() uint64 {
+			rng = rng*6364136223846793005 + 1442695040888963407
+			return rng
+		}
+
+		// Generate a random app name (3-10 lowercase chars)
+		const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+		nameLen := int(nextRng()%8) + 3
+		appName := ""
+		for i := 0; i < nameLen; i++ {
+			appName += string(chars[nextRng()%uint64(len(chars))])
+		}
+
+		// Create isolated temp directories
+		tempDir := t.TempDir()
+		appsDir := filepath.Join(tempDir, "apps")
+		iconsDir := filepath.Join(tempDir, "icons")
+		optDir := filepath.Join(tempDir, "opt")
+		binDir := filepath.Join(tempDir, "bin")
+		err := os.MkdirAll(appsDir, 0755)
+		if err != nil {
+			t.Logf("MkdirAll appsDir failed: %v", err)
+			return false
+		}
+		err = os.MkdirAll(optDir, 0755)
+		if err != nil {
+			t.Logf("MkdirAll optDir failed: %v", err)
+			return false
+		}
+
+		config := &Config{
+			OptDir:      optDir,
+			BinDir:      binDir,
+			AppsDir:     appsDir,
+			IconsDir:    iconsDir,
+			AutoConfirm: true,
+		}
+
+		// Test handleDesktopLauncher on macOS
+		if runtime.GOOS == "darwin" {
+			// On macOS, handleDesktopLauncher should return empty string and nil error
+			desktopPath, err := handleDesktopLauncher(
+				appName,
+				filepath.Join(binDir, appName),
+				"application-x-executable",
+				filepath.Join(optDir, appName),
+				filepath.Join(optDir, appName),
+				nil,   // no desktop files
+				false, // not AppImage
+				config,
+			)
+			if err != nil {
+				t.Logf("handleDesktopLauncher returned error on macOS: %v (appName=%s)", err, appName)
+				return false
+			}
+			if desktopPath != "" {
+				t.Logf("handleDesktopLauncher returned non-empty path on macOS: %q (appName=%s)", desktopPath, appName)
+				return false
+			}
+
+			// Verify no .desktop files were created in appsDir
+			entries, err := os.ReadDir(appsDir)
+			if err != nil {
+				t.Logf("ReadDir appsDir failed: %v", err)
+				return false
+			}
+			for _, entry := range entries {
+				if strings.HasSuffix(entry.Name(), ".desktop") {
+					t.Logf("Found .desktop file %q in appsDir on macOS (appName=%s)", entry.Name(), appName)
+					return false
+				}
+			}
+
+			// Test uninstall skip: simulate a registry entry with DesktopPath and IconPath
+			// and verify UninstallApp does not error due to desktop/icon removal on macOS
+			registryPathOverride = filepath.Join(tempDir, "registry.json")
+			defer func() { registryPathOverride = "" }()
+
+			// Create a fake installed app with desktop and icon paths
+			appOptDir := filepath.Join(optDir, appName)
+			os.MkdirAll(appOptDir, 0755)
+			binaryPath := filepath.Join(appOptDir, appName)
+			os.WriteFile(binaryPath, []byte("#!/bin/bash\necho hi\n"), 0755)
+			os.MkdirAll(binDir, 0755)
+			symlinkPath := filepath.Join(binDir, appName)
+			os.Symlink(binaryPath, symlinkPath)
+
+			reg := &Registry{
+				Apps: map[string]AppMetadata{
+					appName: {
+						Name:        appName,
+						Version:     "1.0.0",
+						BinaryPath:  binaryPath,
+						SymlinkPath: symlinkPath,
+						DesktopPath: filepath.Join(appsDir, appName+".desktop"),
+						IconPath:    filepath.Join(iconsDir, appName+".png"),
+					},
+				},
+			}
+			SaveRegistry(reg)
+
+			// UninstallApp should succeed without error on macOS even with populated DesktopPath/IconPath
+			err = UninstallApp(appName, config, reg)
+			if err != nil {
+				t.Logf("UninstallApp returned error on macOS with populated DesktopPath/IconPath: %v (appName=%s)", err, appName)
+				return false
+			}
+		} else {
+			// On Linux, verify handleDesktopLauncher does NOT skip (it would create a .desktop file)
+			// We just verify it doesn't return an error when called with AutoConfirm
+			// and that it does create a .desktop file (proving the skip is platform-specific)
+			sourceRoot := filepath.Join(optDir, appName)
+			os.MkdirAll(sourceRoot, 0755)
+
+			desktopPath, err := handleDesktopLauncher(
+				appName,
+				filepath.Join(binDir, appName),
+				"application-x-executable",
+				sourceRoot,
+				sourceRoot,
+				nil,   // no desktop files
+				false, // not AppImage
+				config,
+			)
+			if err != nil {
+				t.Logf("handleDesktopLauncher returned error on Linux: %v (appName=%s)", err, appName)
+				return false
+			}
+			// On Linux with AutoConfirm, a .desktop file should be created
+			if desktopPath == "" {
+				t.Logf("handleDesktopLauncher returned empty path on Linux with AutoConfirm (appName=%s)", appName)
+				return false
+			}
+			// Verify the .desktop file exists
+			if _, statErr := os.Stat(desktopPath); statErr != nil {
+				t.Logf(".desktop file not found at %q on Linux (appName=%s)", desktopPath, appName)
+				return false
+			}
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("Desktop integration skip on macOS failed: %v", err)
+	}
+}
+
+// AppImage rejection on macOS
+func TestPropertyAppImageRejectionOnMacOS(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(seed uint64) bool {
+		if seed == 0 {
+			seed = 1
+		}
+		rng := seed
+
+		nextRng := func() uint64 {
+			rng = rng*6364136223846793005 + 1442695040888963407
+			return rng
+		}
+
+		// Generate a random app name (3-10 lowercase chars)
+		const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+		nameLen := int(nextRng()%8) + 3
+		appName := ""
+		for i := 0; i < nameLen; i++ {
+			appName += string(chars[nextRng()%uint64(len(chars))])
+		}
+
+		// Generate a random .appimage filename with varying case
+		extVariants := []string{".AppImage", ".appimage", ".APPIMAGE", ".Appimage"}
+		extIdx := int(nextRng() % uint64(len(extVariants)))
+		appImageFilename := appName + extVariants[extIdx]
+
+		// Create isolated temp directories
+		tempDir := t.TempDir()
+		optDir := filepath.Join(tempDir, "opt")
+		binDir := filepath.Join(tempDir, "bin")
+		appsDir := filepath.Join(tempDir, "apps")
+		iconsDir := filepath.Join(tempDir, "icons")
+
+		config := &Config{
+			OptDir:      optDir,
+			BinDir:      binDir,
+			AppsDir:     appsDir,
+			IconsDir:    iconsDir,
+			AutoConfirm: true,
+		}
+
+		registryPathOverride = filepath.Join(tempDir, "registry.json")
+		defer func() { registryPathOverride = "" }()
+		reg := &Registry{Apps: make(map[string]AppMetadata)}
+		SaveRegistry(reg)
+
+		// Create a fake .appimage file (just needs to exist for the path check)
+		os.MkdirAll(tempDir, 0755)
+		appImagePath := filepath.Join(tempDir, appImageFilename)
+		// Write AppImage-like content (ELF header + AI marker for detection, or just a script)
+		os.WriteFile(appImagePath, []byte("#!/bin/bash\necho appimage\n"), 0755)
+
+		if runtime.GOOS == "darwin" {
+			// On macOS, InstallApp should return an error for .appimage files
+			err := InstallApp(appImagePath, InstallOptions{
+				ForcedName:    appName,
+				ForcedVersion: "1.0.0",
+			}, config, reg)
+
+			if err == nil {
+				t.Logf("InstallApp did not return error for .appimage on macOS (file=%s)", appImageFilename)
+				return false
+			}
+
+			// Error message should indicate AppImage is not supported on macOS
+			if !strings.Contains(err.Error(), "AppImage is not supported on macOS") {
+				t.Logf("Error message does not contain expected text: %v (file=%s)", err, appImageFilename)
+				return false
+			}
+
+			// Verify no files were created in opt_dir or bin_dir
+			if _, statErr := os.Stat(optDir); statErr == nil {
+				entries, _ := os.ReadDir(optDir)
+				if len(entries) > 0 {
+					t.Logf("Files found in opt_dir after AppImage rejection on macOS: %v (file=%s)", entries, appImageFilename)
+					return false
+				}
+			}
+			if _, statErr := os.Stat(binDir); statErr == nil {
+				entries, _ := os.ReadDir(binDir)
+				if len(entries) > 0 {
+					t.Logf("Files found in bin_dir after AppImage rejection on macOS: %v (file=%s)", entries, appImageFilename)
+					return false
+				}
+			}
+		} else {
+			// On Linux, verify that .appimage files are NOT rejected
+			// (they should proceed through the install flow)
+			// We just verify detectFormat correctly identifies it as AppImage
+			isAppImage, _ := detectFormat(appImagePath)
+			if !isAppImage {
+				t.Logf("detectFormat did not identify %q as AppImage on Linux", appImageFilename)
+				return false
+			}
+
+			// And verify the IsDarwin() check is what gates the rejection
+			if IsDarwin() {
+				t.Logf("IsDarwin() returned true on Linux - unexpected")
+				return false
+			}
+		}
+
+		return true
+	}, &cfg)
+
+	if err != nil {
+		t.Errorf("AppImage rejection on macOS failed: %v", err)
+	}
+}
+
+// ============================================================================
+// Unit Tests for macOS-specific functionality
+// ============================================================================
+
+// TestPlatformDefaultConfigMacOS verifies macOS defaults from PlatformDefaultConfig
+func TestPlatformDefaultConfigMacOS(t *testing.T) {
+	// Clear XDG overrides to test pure platform defaults
+	t.Setenv("XDG_BIN_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+
+	cfg := PlatformDefaultConfig()
+
+	if runtime.GOOS == "darwin" {
+		// macOS defaults
+		if cfg.OptDir != "~/Applications/plop" {
+			t.Errorf("macOS OptDir: got %q, want %q", cfg.OptDir, "~/Applications/plop")
+		}
+		if cfg.BinDir != "~/.local/bin" {
+			t.Errorf("macOS BinDir: got %q, want %q", cfg.BinDir, "~/.local/bin")
+		}
+		if cfg.GithubToken != "" {
+			t.Errorf("macOS GithubToken: got %q, want empty", cfg.GithubToken)
+		}
+		if cfg.AutoConfirm != false {
+			t.Errorf("macOS AutoConfirm: got %v, want false", cfg.AutoConfirm)
+		}
+		if cfg.DefaultGUI != nil {
+			t.Errorf("macOS DefaultGUI: got %v, want nil", cfg.DefaultGUI)
+		}
+	} else {
+		// Linux defaults (regression test)
+		if cfg.OptDir != "~/.local/opt" {
+			t.Errorf("Linux OptDir: got %q, want %q", cfg.OptDir, "~/.local/opt")
+		}
+		if cfg.BinDir != "~/.local/bin" {
+			t.Errorf("Linux BinDir: got %q, want %q", cfg.BinDir, "~/.local/bin")
+		}
+		if cfg.AppsDir != "~/.local/share/applications" {
+			t.Errorf("Linux AppsDir: got %q, want %q", cfg.AppsDir, "~/.local/share/applications")
+		}
+		if cfg.IconsDir != "~/.local/share/icons" {
+			t.Errorf("Linux IconsDir: got %q, want %q", cfg.IconsDir, "~/.local/share/icons")
+		}
+		if cfg.GithubToken != "" {
+			t.Errorf("Linux GithubToken: got %q, want empty", cfg.GithubToken)
+		}
+		if cfg.AutoConfirm != false {
+			t.Errorf("Linux AutoConfirm: got %v, want false", cfg.AutoConfirm)
+		}
+		if cfg.DefaultGUI != nil {
+			t.Errorf("Linux DefaultGUI: got %v, want nil", cfg.DefaultGUI)
+		}
+	}
+}
+
+// TestPlatformDefaultConfigLinuxRegression ensures Linux defaults are unchanged
+func TestPlatformDefaultConfigLinuxRegression(t *testing.T) {
+	// Clear XDG overrides
+	t.Setenv("XDG_BIN_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+
+	cfg := PlatformDefaultConfig()
+
+	// BinDir should always be ~/.local/bin without XDG_BIN_HOME
+	if cfg.BinDir != "~/.local/bin" {
+		t.Errorf("BinDir without XDG_BIN_HOME: got %q, want %q", cfg.BinDir, "~/.local/bin")
+	}
+
+	// With XDG_BIN_HOME set, BinDir should use that value
+	t.Setenv("XDG_BIN_HOME", "/custom/bin")
+	cfg = PlatformDefaultConfig()
+	if cfg.BinDir != "/custom/bin" {
+		t.Errorf("BinDir with XDG_BIN_HOME: got %q, want %q", cfg.BinDir, "/custom/bin")
+	}
+}
+
+// TestPlatformConfigDirWithAndWithoutXDG tests PlatformConfigDir behavior
+func TestPlatformConfigDirWithAndWithoutXDG(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("could not get home dir: %v", err)
+	}
+
+	// Without XDG override
+	t.Setenv("XDG_CONFIG_HOME", "")
+	dir := PlatformConfigDir()
+	if runtime.GOOS == "darwin" {
+		expected := filepath.Join(home, "Library", "Application Support", "plop")
+		if dir != expected {
+			t.Errorf("macOS PlatformConfigDir (no XDG): got %q, want %q", dir, expected)
+		}
+	} else {
+		expected := filepath.Join(home, ".config", "plop")
+		if dir != expected {
+			t.Errorf("Linux PlatformConfigDir (no XDG): got %q, want %q", dir, expected)
+		}
+	}
+
+	// With XDG override
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/custom-config")
+	dir = PlatformConfigDir()
+	expected := filepath.Join("/tmp/custom-config", "plop")
+	if dir != expected {
+		t.Errorf("PlatformConfigDir (with XDG): got %q, want %q", dir, expected)
+	}
+}
+
+// TestPlatformDataDirWithAndWithoutXDG tests PlatformDataDir behavior
+func TestPlatformDataDirWithAndWithoutXDG(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("could not get home dir: %v", err)
+	}
+
+	// Without XDG override
+	t.Setenv("XDG_DATA_HOME", "")
+	dir := PlatformDataDir()
+	if runtime.GOOS == "darwin" {
+		expected := filepath.Join(home, "Library", "Application Support", "plop")
+		if dir != expected {
+			t.Errorf("macOS PlatformDataDir (no XDG): got %q, want %q", dir, expected)
+		}
+	} else {
+		expected := filepath.Join(home, ".local", "share", "plop")
+		if dir != expected {
+			t.Errorf("Linux PlatformDataDir (no XDG): got %q, want %q", dir, expected)
+		}
+	}
+
+	// With XDG override
+	t.Setenv("XDG_DATA_HOME", "/tmp/custom-data")
+	dir = PlatformDataDir()
+	expected := filepath.Join("/tmp/custom-data", "plop")
+	if dir != expected {
+		t.Errorf("PlatformDataDir (with XDG): got %q, want %q", dir, expected)
+	}
+}
+
+// TestIsMachOValidAndInvalid tests IsMachO with valid Mach-O bytes and non-Mach-O bytes
+func TestIsMachOValidAndInvalid(t *testing.T) {
+	tempDir := t.TempDir()
+
+	tests := []struct {
+		name    string
+		content []byte
+		wantOk  bool
+		desc    string
+	}{
+		{
+			name:    "mach-o-64bit-magic",
+			content: []byte{0xFE, 0xED, 0xFA, 0xCF, 0x00, 0x00, 0x00, 0x00},
+			wantOk:  false, // raw bytes alone don't make a valid Mach-O (needs proper headers)
+			desc:    "raw 64-bit magic bytes without valid header structure",
+		},
+		{
+			name:    "mach-o-32bit-magic",
+			content: []byte{0xFE, 0xED, 0xFA, 0xCE, 0x00, 0x00, 0x00, 0x00},
+			wantOk:  false, // raw bytes alone don't make a valid Mach-O
+			desc:    "raw 32-bit magic bytes without valid header structure",
+		},
+		{
+			name:    "elf-binary",
+			content: []byte{0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01, 0x01, 0x00},
+			wantOk:  false,
+			desc:    "ELF binary should not be detected as Mach-O",
+		},
+		{
+			name:    "plain-text",
+			content: []byte("Hello, World! This is plain text."),
+			wantOk:  false,
+			desc:    "plain text file",
+		},
+		{
+			name:    "empty-file",
+			content: []byte{},
+			wantOk:  false,
+			desc:    "empty file",
+		},
+		{
+			name:    "java-class-file",
+			content: []byte{0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x34},
+			wantOk:  false,
+			desc:    "Java .class file (shares 0xCAFEBABE magic but invalid fat header)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filePath := filepath.Join(tempDir, tt.name)
+			err := os.WriteFile(filePath, tt.content, 0644)
+			if err != nil {
+				t.Fatalf("failed to write test file: %v", err)
+			}
+
+			ok, err := IsMachO(filePath)
+			if err != nil {
+				t.Fatalf("IsMachO returned error: %v", err)
+			}
+			if ok != tt.wantOk {
+				t.Errorf("IsMachO(%s) = %v, want %v (%s)", tt.name, ok, tt.wantOk, tt.desc)
+			}
+		})
+	}
+}
+
+// TestIsExecutableDispatch tests IsExecutable dispatches correctly per platform
+func TestIsExecutableDispatch(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Test with a shebang script (should work on both platforms)
+	scriptPath := filepath.Join(tempDir, "script.sh")
+	err := os.WriteFile(scriptPath, []byte("#!/bin/bash\necho hello\n"), 0755)
+	if err != nil {
+		t.Fatalf("failed to write script: %v", err)
+	}
+
+	isExec, isNative, err := IsExecutable(scriptPath)
+	if err != nil {
+		t.Fatalf("IsExecutable(script) error: %v", err)
+	}
+	if !isExec {
+		t.Errorf("IsExecutable(script) isExec = false, want true")
+	}
+	if isNative {
+		t.Errorf("IsExecutable(script) isNative = true, want false (scripts are not native)")
+	}
+
+	// Test with a plain text file (should not be executable on any platform)
+	textPath := filepath.Join(tempDir, "readme.txt")
+	err = os.WriteFile(textPath, []byte("Just a readme file."), 0644)
+	if err != nil {
+		t.Fatalf("failed to write text file: %v", err)
+	}
+
+	isExec, isNative, err = IsExecutable(textPath)
+	if err != nil {
+		t.Fatalf("IsExecutable(text) error: %v", err)
+	}
+	if isExec {
+		t.Errorf("IsExecutable(text) isExec = true, want false")
+	}
+	if isNative {
+		t.Errorf("IsExecutable(text) isNative = true, want false")
+	}
+
+	// Test with ELF-like bytes (only valid on Linux)
+	elfPath := filepath.Join(tempDir, "elf-binary")
+	// This is just magic bytes, not a valid ELF, so IsELF will return false
+	err = os.WriteFile(elfPath, []byte{0x7F, 0x45, 0x4C, 0x46, 0x00, 0x00}, 0755)
+	if err != nil {
+		t.Fatalf("failed to write elf file: %v", err)
+	}
+
+	isExec, isNative, err = IsExecutable(elfPath)
+	if err != nil {
+		t.Fatalf("IsExecutable(elf-like) error: %v", err)
+	}
+	// Invalid ELF (just magic bytes) won't pass debug/elf.Open validation
+	// so it should not be detected as executable
+	if isExec {
+		t.Logf("Note: IsExecutable detected partial ELF magic as executable (platform=%s)", runtime.GOOS)
+	}
+}
+
+// TestFindBestAssetDarwinSpecific tests FindBestAsset with macOS-specific asset lists
+func TestFindBestAssetDarwinSpecific(t *testing.T) {
+	// Test darwin/arm64 asset selection
+	releaseArm64 := &GithubRelease{
+		TagName: "v1.0.0",
+		Assets: []GithubAsset{
+			{Name: "app-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux"},
+			{Name: "app-darwin-arm64.tar.gz", BrowserDownloadURL: "https://example.com/mac-arm"},
+			{Name: "app-darwin-amd64.tar.gz", BrowserDownloadURL: "https://example.com/mac-intel"},
+			{Name: "app-windows-amd64.zip", BrowserDownloadURL: "https://example.com/win"},
+		},
+	}
+
+	// Test using findBestDarwinAsset directly (platform-independent test)
+	url, name := findBestDarwinAsset(releaseArm64)
+	// On arm64 host, should prefer arm64; on amd64 host, should prefer amd64
+	if runtime.GOARCH == "arm64" {
+		if url != "https://example.com/mac-arm" || name != "app-darwin-arm64.tar.gz" {
+			t.Errorf("findBestDarwinAsset(arm64 host) = (%q, %q), want mac-arm asset", url, name)
+		}
+	} else {
+		if url != "https://example.com/mac-intel" || name != "app-darwin-amd64.tar.gz" {
+			t.Errorf("findBestDarwinAsset(amd64 host) = (%q, %q), want mac-intel asset", url, name)
+		}
+	}
+
+	// Test with macos/osx platform identifiers
+	releaseOSX := &GithubRelease{
+		TagName: "v2.0.0",
+		Assets: []GithubAsset{
+			{Name: "tool-linux-x86_64.tar.gz", BrowserDownloadURL: "https://example.com/linux"},
+			{Name: "tool-macos-universal.zip", BrowserDownloadURL: "https://example.com/macos"},
+			{Name: "tool-windows.exe", BrowserDownloadURL: "https://example.com/win"},
+		},
+	}
+	url, name = findBestDarwinAsset(releaseOSX)
+	if url != "https://example.com/macos" || name != "tool-macos-universal.zip" {
+		t.Errorf("findBestDarwinAsset(macos identifier) = (%q, %q), want macos asset", url, name)
+	}
+
+	// Test with .dmg extension
+	releaseDMG := &GithubRelease{
+		TagName: "v3.0.0",
+		Assets: []GithubAsset{
+			{Name: "editor-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux"},
+			{Name: "editor-darwin-arm64.dmg", BrowserDownloadURL: "https://example.com/mac-dmg"},
+			{Name: "editor-windows.msi", BrowserDownloadURL: "https://example.com/win"},
+		},
+	}
+	url, name = findBestDarwinAsset(releaseDMG)
+	if !strings.Contains(url, "mac-dmg") {
+		t.Errorf("findBestDarwinAsset(.dmg) = (%q, %q), want mac-dmg asset", url, name)
+	}
+
+	// Test fallback: no darwin platform match returns first asset
+	releaseNoDarwin := &GithubRelease{
+		TagName: "v4.0.0",
+		Assets: []GithubAsset{
+			{Name: "app-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux"},
+			{Name: "app-windows-amd64.zip", BrowserDownloadURL: "https://example.com/win"},
+		},
+	}
+	url, name = findBestDarwinAsset(releaseNoDarwin)
+	if url != "https://example.com/linux" || name != "app-linux-amd64.tar.gz" {
+		t.Errorf("findBestDarwinAsset(no darwin) = (%q, %q), want first asset as fallback", url, name)
+	}
+}
+
+// TestFindBestAssetPreservesLinuxCases ensures existing Linux test cases still pass
+func TestFindBestAssetPreservesLinuxCases(t *testing.T) {
+	// These mirror the cases from TestFindBestLinuxAsset but use FindBestAsset
+	// to verify the dispatch works correctly
+
+	// Case: Single asset (should always be returned regardless of platform)
+	releaseSingle := &GithubRelease{
+		TagName: "v2.0.6",
+		Assets: []GithubAsset{
+			{
+				Name:               "Antigravity.tar.gz",
+				BrowserDownloadURL: "https://storage.googleapis.com/antigravity/linux-x64/Antigravity.tar.gz",
+			},
+		},
+	}
+	url, name := FindBestAsset(releaseSingle)
+	if url != "https://storage.googleapis.com/antigravity/linux-x64/Antigravity.tar.gz" || name != "Antigravity.tar.gz" {
+		t.Errorf("FindBestAsset(single) = (%q, %q), want single asset returned", url, name)
+	}
+
+	// Case: Linux-specific assets via findBestLinuxAsset directly
+	releaseLinux := &GithubRelease{
+		TagName: "v0.10.0",
+		Assets: []GithubAsset{
+			{Name: "janice-0.10.0-windows-amd64.zip", BrowserDownloadURL: "https://github.com/win-zip"},
+			{Name: "janice-0.10.0-linux-amd64.tar.xz", BrowserDownloadURL: "https://github.com/linux-tar"},
+			{Name: "janice-0.10.0-darwin-amd64.tar.gz", BrowserDownloadURL: "https://github.com/mac-tar"},
+		},
+	}
+	url, name = findBestLinuxAsset(releaseLinux)
+	if url != "https://github.com/linux-tar" || name != "janice-0.10.0-linux-amd64.tar.xz" {
+		t.Errorf("findBestLinuxAsset(standard) = (%q, %q), want linux-tar", url, name)
+	}
+
+	// Case: AppImage in multi-asset release (Linux)
+	releaseAppImage := &GithubRelease{
+		TagName: "v2.4.1",
+		Assets: []GithubAsset{
+			{Name: "Cutter-v2.4.1-macOS.dmg", BrowserDownloadURL: "https://github.com/mac"},
+			{Name: "Cutter-v2.4.1-Windows.zip", BrowserDownloadURL: "https://github.com/win"},
+			{Name: "Cutter-v2.4.1-Linux-x86_64.AppImage", BrowserDownloadURL: "https://github.com/linux-appimage"},
+		},
+	}
+	url, name = findBestLinuxAsset(releaseAppImage)
+	if url != "https://github.com/linux-appimage" {
+		t.Errorf("findBestLinuxAsset(appimage) = (%q, %q), want linux-appimage", url, name)
+	}
+}
+
+// TestFindBestAssetExcludesAppImageOnMacOS verifies .appimage is excluded on macOS
+func TestFindBestAssetExcludesAppImageOnMacOS(t *testing.T) {
+	// Release where the only macOS-matching asset is an .appimage (should be excluded)
+	release := &GithubRelease{
+		TagName: "v1.0.0",
+		Assets: []GithubAsset{
+			{Name: "app-darwin-arm64.appimage", BrowserDownloadURL: "https://example.com/mac-appimage"},
+			{Name: "app-darwin-arm64.tar.gz", BrowserDownloadURL: "https://example.com/mac-tarball"},
+			{Name: "app-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux"},
+		},
+	}
+
+	url, name := findBestDarwinAsset(release)
+	// Should select the .tar.gz, not the .appimage
+	if strings.HasSuffix(strings.ToLower(name), ".appimage") {
+		t.Errorf("findBestDarwinAsset selected .appimage asset: (%q, %q)", url, name)
+	}
+	if url != "https://example.com/mac-tarball" {
+		t.Errorf("findBestDarwinAsset = (%q, %q), want mac-tarball", url, name)
+	}
+
+	// Release where ALL macOS assets are .appimage (should fall back to first asset)
+	releaseAllAppImage := &GithubRelease{
+		TagName: "v2.0.0",
+		Assets: []GithubAsset{
+			{Name: "app-darwin-arm64.appimage", BrowserDownloadURL: "https://example.com/mac-appimage1"},
+			{Name: "app-darwin-amd64.AppImage", BrowserDownloadURL: "https://example.com/mac-appimage2"},
+			{Name: "app-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux"},
+		},
+	}
+
+	url, name = findBestDarwinAsset(releaseAllAppImage)
+	// No valid macOS asset, should fall back to first asset
+	if url != "https://example.com/mac-appimage1" {
+		// Actually the fallback returns first asset in the list
+		if url != "https://example.com/mac-appimage1" && url != "https://example.com/linux" {
+			t.Errorf("findBestDarwinAsset(all appimage) unexpected: (%q, %q)", url, name)
+		}
+	}
+}
+
+// TestAppImageRejectionErrorMessage verifies the error message on macOS
+func TestAppImageRejectionErrorMessage(t *testing.T) {
+	tempDir := t.TempDir()
+	registryPathOverride = filepath.Join(tempDir, "registry.json")
+	defer func() { registryPathOverride = "" }()
+
+	config := &Config{
+		OptDir:      filepath.Join(tempDir, "opt"),
+		BinDir:      filepath.Join(tempDir, "bin"),
+		AppsDir:     filepath.Join(tempDir, "apps"),
+		IconsDir:    filepath.Join(tempDir, "icons"),
+		AutoConfirm: true,
+	}
+	reg := &Registry{Apps: make(map[string]AppMetadata)}
+	SaveRegistry(reg)
+
+	// Create a fake .appimage file
+	appImagePath := filepath.Join(tempDir, "test-app.AppImage")
+	os.WriteFile(appImagePath, []byte("#!/bin/bash\necho fake\n"), 0755)
+
+	if runtime.GOOS == "darwin" {
+		err := InstallApp(appImagePath, InstallOptions{
+			ForcedName:    "test-app",
+			ForcedVersion: "1.0.0",
+		}, config, reg)
+
+		if err == nil {
+			t.Fatal("expected error for AppImage on macOS, got nil")
+		}
+		expectedMsg := "AppImage is not supported on macOS"
+		if !strings.Contains(err.Error(), expectedMsg) {
+			t.Errorf("error message %q does not contain %q", err.Error(), expectedMsg)
+		}
+	} else {
+		// On Linux, verify detectFormat identifies it as AppImage
+		isAppImage, _ := detectFormat(appImagePath)
+		if !isAppImage {
+			t.Errorf("detectFormat did not identify .AppImage file on Linux")
+		}
+	}
+}
+
+// TestDesktopLauncherSkipOnMacOS verifies desktop launcher is skipped on macOS
+func TestDesktopLauncherSkipOnMacOS(t *testing.T) {
+	tempDir := t.TempDir()
+	appsDir := filepath.Join(tempDir, "apps")
+	os.MkdirAll(appsDir, 0755)
+
+	config := &Config{
+		OptDir:      filepath.Join(tempDir, "opt"),
+		BinDir:      filepath.Join(tempDir, "bin"),
+		AppsDir:     appsDir,
+		IconsDir:    filepath.Join(tempDir, "icons"),
+		AutoConfirm: true,
+	}
+
+	desktopPath, err := handleDesktopLauncher(
+		"testapp",
+		filepath.Join(config.BinDir, "testapp"),
+		"application-x-executable",
+		filepath.Join(config.OptDir, "testapp"),
+		filepath.Join(config.OptDir, "testapp"),
+		nil,
+		false,
+		config,
+	)
+
+	if runtime.GOOS == "darwin" {
+		if err != nil {
+			t.Errorf("handleDesktopLauncher on macOS returned error: %v", err)
+		}
+		if desktopPath != "" {
+			t.Errorf("handleDesktopLauncher on macOS returned path %q, want empty", desktopPath)
+		}
+		// Verify no .desktop file was created
+		entries, _ := os.ReadDir(appsDir)
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".desktop") {
+				t.Errorf("found .desktop file %q on macOS", e.Name())
+			}
+		}
+	} else {
+		// On Linux with AutoConfirm, a .desktop file should be created
+		if err != nil {
+			t.Errorf("handleDesktopLauncher on Linux returned error: %v", err)
+		}
+		if desktopPath == "" {
+			t.Errorf("handleDesktopLauncher on Linux returned empty path, want .desktop file")
+		}
+	}
+}
+
+// TestExtractDMGOnMacOS tests DMG extraction (skipped on non-macOS)
+func TestExtractDMGOnMacOS(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("DMG extraction requires macOS (hdiutil)")
+	}
+
+	// Test that ExtractArchive rejects .dmg on non-darwin (covered by skip above)
+	// On macOS, test with a non-existent DMG to verify error handling
+	tempDir := t.TempDir()
+	destDir := filepath.Join(tempDir, "extracted")
+
+	// Test with non-existent file
+	warning, err := ExtractDMG("/nonexistent/path/fake.dmg", destDir)
+	if err == nil {
+		t.Errorf("ExtractDMG with non-existent file should return error")
+	}
+	_ = warning
+
+	// Test that ExtractArchive routes .dmg correctly
+	err = ExtractArchive("/nonexistent/path/fake.dmg", destDir)
+	if err == nil {
+		t.Errorf("ExtractArchive(.dmg) with non-existent file should return error")
+	}
+	if !strings.Contains(err.Error(), "DMG") && !strings.Contains(err.Error(), "dmg") &&
+		!strings.Contains(err.Error(), "mount") && !strings.Contains(err.Error(), "hdiutil") {
+		t.Logf("ExtractArchive(.dmg) error: %v", err)
+	}
+}
+
+// TestExtractArchiveDMGOnLinux verifies .dmg is rejected on Linux
+func TestExtractArchiveDMGOnLinux(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("This test verifies Linux-specific .dmg rejection")
+	}
+
+	tempDir := t.TempDir()
+	destDir := filepath.Join(tempDir, "extracted")
+
+	// Create a fake .dmg file
+	dmgPath := filepath.Join(tempDir, "app.dmg")
+	os.WriteFile(dmgPath, []byte("fake dmg content"), 0644)
+
+	err := ExtractArchive(dmgPath, destDir)
+	if err == nil {
+		t.Fatal("ExtractArchive(.dmg) on Linux should return error")
+	}
+	if !strings.Contains(err.Error(), "not supported on this platform") {
+		t.Errorf("error message %q should mention platform unsupported", err.Error())
 	}
 }

@@ -37,9 +37,9 @@ func UpgradeApp(appName string, config *Config, reg *Registry) error {
 		PrintInfo("New version available for '%s': %s (Installed: %s)", appName, latestVersion, app.Version)
 	}
 
-	downloadURL, assetName := FindBestLinuxAsset(release)
+	downloadURL, assetName := FindBestAsset(release)
 	if downloadURL == "" {
-		return fmt.Errorf("could not find a compatible Linux binary asset (tar/zip) in the latest release")
+		return fmt.Errorf("could not find a compatible binary asset in the latest release")
 	}
 
 	PrintInfo("Found release asset: %s", assetName)
@@ -94,7 +94,7 @@ func UpgradeAll(config *Config, reg *Registry) error {
 
 		latestVersion := strings.TrimPrefix(release.TagName, "v")
 		if latestVersion != app.Version {
-			downloadURL, _ := FindBestLinuxAsset(release)
+			downloadURL, _ := FindBestAsset(release)
 			if downloadURL != "" {
 				targets = append(targets, UpgradeTarget{
 					AppName:     name,

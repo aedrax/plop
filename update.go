@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -37,7 +38,11 @@ func FetchLatestRelease(updateURL string, token string) (*GithubRelease, error) 
 
 	// If it is a generic/non-GitHub URL, route to the HTML scraper
 	if !strings.Contains(updateURL, "github.com/") {
-		PrintInfo("Update URL is a generic web page. Scraping for compatible Linux downloads...")
+		if IsDarwin() {
+			PrintInfo("Update URL is a generic web page. Scraping for compatible macOS downloads...")
+		} else {
+			PrintInfo("Update URL is a generic web page. Scraping for compatible Linux downloads...")
+		}
 		return ScrapeGenericRelease(updateURL)
 	}
 
@@ -88,12 +93,97 @@ func FetchLatestRelease(updateURL string, token string) (*GithubRelease, error) 
 	return &release, nil
 }
 
-// FindBestLinuxAsset matches host architecture and archive types within assets
-func FindBestLinuxAsset(release *GithubRelease) (string, string) {
+// FindBestAsset selects the best release asset for the current platform and architecture.
+// On macOS: matches darwin/macos/osx + arm64/aarch64 or amd64/x86_64/x64
+// On Linux: matches linux + amd64/x86_64/x64 (existing logic)
+func FindBestAsset(release *GithubRelease) (string, string) {
 	if len(release.Assets) == 1 {
 		return release.Assets[0].BrowserDownloadURL, release.Assets[0].Name
 	}
 
+	if runtime.GOOS == "darwin" {
+		return findBestDarwinAsset(release)
+	}
+	return findBestLinuxAsset(release)
+}
+
+// findBestDarwinAsset selects the best macOS release asset for the current architecture.
+func findBestDarwinAsset(release *GithubRelease) (string, string) {
+	// Determine architecture identifiers based on GOARCH
+	var archIdentifiers []string
+	switch runtime.GOARCH {
+	case "arm64":
+		archIdentifiers = []string{"arm64", "aarch64"}
+	default: // amd64
+		archIdentifiers = []string{"amd64", "x86_64", "x64"}
+	}
+
+	// Phase 1: Exact platform + architecture + valid extension match
+	for _, asset := range release.Assets {
+		name := strings.ToLower(asset.Name)
+		urlStr := strings.ToLower(asset.BrowserDownloadURL)
+
+		if !isDarwinPlatform(name, urlStr) {
+			continue
+		}
+		if !isDarwinValidExtension(name) {
+			continue
+		}
+		if matchesArch(name, urlStr, archIdentifiers) {
+			return asset.BrowserDownloadURL, asset.Name
+		}
+	}
+
+	// Phase 2: Platform match + valid extension (no arch match, fallback)
+	for _, asset := range release.Assets {
+		name := strings.ToLower(asset.Name)
+		urlStr := strings.ToLower(asset.BrowserDownloadURL)
+
+		if !isDarwinPlatform(name, urlStr) {
+			continue
+		}
+		if !isDarwinValidExtension(name) {
+			continue
+		}
+		return asset.BrowserDownloadURL, asset.Name
+	}
+
+	// Phase 3: No platform match, return first available asset
+	if len(release.Assets) > 0 {
+		return release.Assets[0].BrowserDownloadURL, release.Assets[0].Name
+	}
+
+	return "", ""
+}
+
+// isDarwinPlatform checks if the asset name or URL contains a macOS platform identifier.
+func isDarwinPlatform(name, urlStr string) bool {
+	return strings.Contains(name, "darwin") || strings.Contains(urlStr, "darwin") ||
+		strings.Contains(name, "macos") || strings.Contains(urlStr, "macos") ||
+		strings.Contains(name, "osx") || strings.Contains(urlStr, "osx")
+}
+
+// isDarwinValidExtension checks if the asset has an accepted macOS extension and is not an AppImage.
+func isDarwinValidExtension(name string) bool {
+	if strings.HasSuffix(name, ".appimage") {
+		return false
+	}
+	return strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tar.xz") ||
+		strings.HasSuffix(name, ".zip") || strings.HasSuffix(name, ".dmg")
+}
+
+// matchesArch checks if the asset name or URL contains one of the given architecture identifiers.
+func matchesArch(name, urlStr string, archIdentifiers []string) bool {
+	for _, arch := range archIdentifiers {
+		if strings.Contains(name, arch) || strings.Contains(urlStr, arch) {
+			return true
+		}
+	}
+	return false
+}
+
+// findBestLinuxAsset preserves the existing Linux asset selection logic.
+func findBestLinuxAsset(release *GithubRelease) (string, string) {
 	// 1. Strict architecture and format matching
 	for _, asset := range release.Assets {
 		name := strings.ToLower(asset.Name)
@@ -232,7 +322,7 @@ func ScrapeGenericRelease(updateURL string) (*GithubRelease, error) {
 	bodyStr := string(bodyBytes)
 
 	// Scan for both standard HTML href="..." links AND any quoted archive URLs (bypasses JS obfuscations like SQLite's)
-	hrefRegex := regexp.MustCompile(`(?i)href=["']([^"']+)["']|["']([^"']+\.(?:zip|tar|tar\.gz|tar\.xz|tgz|txz|tbz2|tar\.bz2|AppImage|appimage))["']`)
+	hrefRegex := regexp.MustCompile(`(?i)href=["']([^"']+)["']|["']([^"']+\.(?:zip|tar|tar\.gz|tar\.xz|tgz|txz|tbz2|tar\.bz2|AppImage|appimage|dmg))["']`)
 	matches := hrefRegex.FindAllStringSubmatch(bodyStr, -1)
 
 	// Scan for script and modulepreload JS files in HTML to scrape modern SPAs
@@ -284,14 +374,32 @@ func ScrapeGenericRelease(updateURL string) (*GithubRelease, error) {
 		absoluteURL := ResolveRelativeURL(updateURL, rawLink)
 		lowerURL := strings.ToLower(absoluteURL)
 
-		// Check if it's a Linux archive or AppImage
-		isLinux := strings.Contains(lowerURL, "linux") || strings.Contains(lowerURL, "ubuntu") || strings.Contains(lowerURL, "debian")
-		isArch := strings.Contains(lowerURL, "amd64") || strings.Contains(lowerURL, "x86_64") || strings.Contains(lowerURL, "x64")
+		var isPlatform, isArch, isArchive bool
 
-		ext := strings.ToLower(filepath.Ext(lowerURL))
-		isArchive := ext == ".zip" || ext == ".gz" || ext == ".xz" || ext == ".bz2" || ext == ".tgz" || ext == ".txz" || ext == ".tbz2" || ext == ".tar" || ext == ".appimage"
+		if runtime.GOOS == "darwin" {
+			// macOS: match darwin/macos/osx platform identifiers
+			isPlatform = strings.Contains(lowerURL, "darwin") || strings.Contains(lowerURL, "macos") || strings.Contains(lowerURL, "osx")
 
-		if isArchive && (isLinux || isArch) {
+			// macOS: match architecture identifiers based on host arch
+			if runtime.GOARCH == "arm64" {
+				isArch = strings.Contains(lowerURL, "arm64") || strings.Contains(lowerURL, "aarch64")
+			} else {
+				isArch = strings.Contains(lowerURL, "x86_64") || strings.Contains(lowerURL, "amd64") || strings.Contains(lowerURL, "x64")
+			}
+
+			// macOS: accept .dmg in addition to common archive extensions
+			ext := strings.ToLower(filepath.Ext(lowerURL))
+			isArchive = ext == ".zip" || ext == ".gz" || ext == ".xz" || ext == ".bz2" || ext == ".tgz" || ext == ".txz" || ext == ".tbz2" || ext == ".tar" || ext == ".dmg"
+		} else {
+			// Linux: preserve existing matching logic
+			isPlatform = strings.Contains(lowerURL, "linux") || strings.Contains(lowerURL, "ubuntu") || strings.Contains(lowerURL, "debian")
+			isArch = strings.Contains(lowerURL, "amd64") || strings.Contains(lowerURL, "x86_64") || strings.Contains(lowerURL, "x64")
+
+			ext := strings.ToLower(filepath.Ext(lowerURL))
+			isArchive = ext == ".zip" || ext == ".gz" || ext == ".xz" || ext == ".bz2" || ext == ".tgz" || ext == ".txz" || ext == ".tbz2" || ext == ".tar" || ext == ".appimage"
+		}
+
+		if isArchive && (isPlatform || isArch) {
 			// Extract version using our DeduceAppDetails (pass absoluteURL to extract versions from URL paths if needed)
 			_, ver := DeduceAppDetails(absoluteURL)
 			filename := filepath.Base(absoluteURL)
@@ -312,6 +420,9 @@ func ScrapeGenericRelease(updateURL string) (*GithubRelease, error) {
 	}
 
 	if bestURL == "" {
+		if runtime.GOOS == "darwin" {
+			return nil, fmt.Errorf("could not find any compatible macOS download link on page: %s", updateURL)
+		}
 		return nil, fmt.Errorf("could not find any compatible Linux download link on page: %s", updateURL)
 	}
 
