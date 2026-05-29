@@ -85,6 +85,17 @@ func LoadRegistry() (*Registry, error) {
 		return nil, err
 	}
 
+	// Remediate permissive file permissions from older versions
+	fileInfo, err := os.Stat(registryPath)
+	if err != nil {
+		return nil, err
+	}
+	if fileInfo.Mode().Perm()&0077 != 0 {
+		if err := os.Chmod(registryPath, 0600); err != nil {
+			return nil, err
+		}
+	}
+
 	// In case file is empty
 	if len(data) == 0 {
 		return &Registry{Apps: make(map[string]AppMetadata)}, nil
@@ -116,5 +127,5 @@ func SaveRegistry(reg *Registry) error {
 		return err
 	}
 
-	return os.WriteFile(registryPath, data, 0644)
+	return os.WriteFile(registryPath, data, 0600)
 }

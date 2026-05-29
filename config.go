@@ -98,7 +98,7 @@ func LoadConfig() (*Config, error) {
 			return nil, err
 		}
 
-		err = os.WriteFile(configPath, data, 0644)
+		err = os.WriteFile(configPath, data, 0600)
 		if err != nil {
 			return nil, err
 		}
@@ -108,6 +108,17 @@ func LoadConfig() (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, err
+	}
+
+	// Remediate permissive file permissions from older versions
+	fileInfo, err := os.Stat(configPath)
+	if err != nil {
+		return nil, err
+	}
+	if fileInfo.Mode().Perm()&0077 != 0 {
+		if err := os.Chmod(configPath, 0600); err != nil {
+			return nil, err
+		}
 	}
 
 	var cfg Config
