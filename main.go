@@ -117,7 +117,7 @@ func handleHelp() {
 }
 
 func handleVersion() {
-	fmt.Printf("plop v1.1.0\n")
+	fmt.Printf("plop v1.2.0\n")
 }
 
 func handleList(args []string, config *Config, reg *Registry) {
@@ -193,6 +193,24 @@ func handleInstall(args []string, config *Config, reg *Registry) {
 		PrintError("Missing argument: plop install <archive-path-or-url>")
 		os.Exit(2)
 	}
+
+	// Check for unsupported GitHub URL formats (e.g., /tree/, /wiki/, /issues/)
+	if IsUnsupportedGitHubURL(archivePath) {
+		PrintError("URL is not a supported GitHub format")
+		os.Exit(1)
+	}
+
+	// If the input is a GitHub repo URL, resolve it to a download URL via the Releases API
+	if IsGitHubRepoURL(archivePath) {
+		downloadURL, resolvedOpts, err := ResolveGitHubInstall(archivePath, options, config)
+		if err != nil {
+			PrintError("GitHub install failed: %v", err)
+			os.Exit(1)
+		}
+		archivePath = downloadURL
+		options = resolvedOpts
+	}
+
 	err := InstallApp(archivePath, options, config, reg)
 	if err != nil {
 		PrintError("Installation failed: %v", err)
@@ -266,6 +284,57 @@ func handleSet(args []string, config *Config, reg *Registry) {
 }
 
 func handleImplicitInstall(args []string, config *Config, reg *Registry, command string) {
+	// Check for unsupported GitHub URL formats (e.g., /tree/, /wiki/, /issues/)
+	if IsUnsupportedGitHubURL(command) {
+		PrintError("URL is not a supported GitHub format")
+		os.Exit(1)
+	}
+
+	// If the input is a GitHub repo URL, resolve it to a download URL via the Releases API
+	if IsGitHubRepoURL(command) {
+		options := InstallOptions{}
+		for i := 1; i < len(args); i++ {
+			arg := args[i]
+			if arg == "--name" || arg == "-n" {
+				if i+1 < len(args) {
+					options.ForcedName = args[i+1]
+					i++
+				}
+			} else if arg == "--version" || arg == "-v" || arg == "--ver" {
+				if i+1 < len(args) {
+					options.ForcedVersion = args[i+1]
+					i++
+				}
+			} else if arg == "--bin" || arg == "-b" || arg == "--binary" {
+				if i+1 < len(args) {
+					options.ForcedBinaryName = args[i+1]
+					i++
+				}
+			} else if arg == "--source" || arg == "-s" {
+				if i+1 < len(args) {
+					options.ForcedSource = args[i+1]
+					i++
+				}
+			} else if arg == "--install-script" || arg == "-i" {
+				if i+1 < len(args) {
+					options.ForcedInstallScript = args[i+1]
+					i++
+				}
+			}
+		}
+		downloadURL, resolvedOpts, err := ResolveGitHubInstall(command, options, config)
+		if err != nil {
+			PrintError("GitHub install failed: %v", err)
+			os.Exit(1)
+		}
+		err = InstallApp(downloadURL, resolvedOpts, config, reg)
+		if err != nil {
+			PrintError("Installation failed: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	isURL := strings.HasPrefix(command, "http://") || strings.HasPrefix(command, "https://")
 	ext := strings.ToLower(filepath.Ext(command))
 	isArchive := ext == ".zip" || ext == ".gz" || ext == ".xz" || ext == ".bz2" || ext == ".tgz" || ext == ".txz" || ext == ".tbz2" || ext == ".tar" || ext == ".appimage"

@@ -2737,3 +2737,1492 @@ func TestExtractArchiveDMGOnLinux(t *testing.T) {
 		t.Errorf("error message %q should mention platform unsupported", err.Error())
 	}
 }
+
+// GitHub URL classification correctness
+func TestPropertyGitHubURLClassification(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	// Sub-property: Repo URLs classify as GitHubURLRepo
+	err := quick.Check(func(owner, repo string) bool {
+		// Filter to valid owner/repo strings (non-empty, no slashes, no whitespace, no null bytes)
+		if !isValidSegment(owner) || !isValidSegment(repo) {
+			return true // skip invalid inputs
+		}
+
+		// Plain repo URL
+		url := "https://github.com/" + owner + "/" + repo
+		if ClassifyGitHubURL(url) != GitHubURLRepo {
+			t.Logf("expected GitHubURLRepo for %q", url)
+			return false
+		}
+
+		// With trailing slash
+		urlSlash := url + "/"
+		if ClassifyGitHubURL(urlSlash) != GitHubURLRepo {
+			t.Logf("expected GitHubURLRepo for %q", urlSlash)
+			return false
+		}
+
+		// With .git suffix
+		urlGit := url + ".git"
+		if ClassifyGitHubURL(urlGit) != GitHubURLRepo {
+			t.Logf("expected GitHubURLRepo for %q", urlGit)
+			return false
+		}
+
+		return true
+	}, &cfg)
+	if err != nil {
+		t.Errorf("Repo URL classification failed: %v", err)
+	}
+
+	// Sub-property: Direct download URLs classify as GitHubURLDirect
+	err = quick.Check(func(owner, repo, extra string) bool {
+		if !isValidSegment(owner) || !isValidSegment(repo) {
+			return true
+		}
+		if extra == "" || strings.ContainsRune(extra, 0) {
+			return true
+		}
+
+		// /releases/ path
+		urlReleases := "https://github.com/" + owner + "/" + repo + "/releases/" + extra
+		if ClassifyGitHubURL(urlReleases) != GitHubURLDirect {
+			t.Logf("expected GitHubURLDirect for %q", urlReleases)
+			return false
+		}
+
+		// /archive/ path
+		urlArchive := "https://github.com/" + owner + "/" + repo + "/archive/" + extra
+		if ClassifyGitHubURL(urlArchive) != GitHubURLDirect {
+			t.Logf("expected GitHubURLDirect for %q", urlArchive)
+			return false
+		}
+
+		return true
+	}, &cfg)
+	if err != nil {
+		t.Errorf("Direct download URL classification failed: %v", err)
+	}
+
+	// Sub-property: Unsupported GitHub paths classify as GitHubURLUnsupported
+	err = quick.Check(func(owner, repo string) bool {
+		if !isValidSegment(owner) || !isValidSegment(repo) {
+			return true
+		}
+
+		unsupported := []string{"/tree/main", "/wiki/Home", "/issues/1", "/pull/42", "/blob/main/README.md"}
+		for _, suffix := range unsupported {
+			url := "https://github.com/" + owner + "/" + repo + suffix
+			if ClassifyGitHubURL(url) != GitHubURLUnsupported {
+				t.Logf("expected GitHubURLUnsupported for %q", url)
+				return false
+			}
+		}
+
+		return true
+	}, &cfg)
+	if err != nil {
+		t.Errorf("Unsupported URL classification failed: %v", err)
+	}
+
+	// Sub-property: Non-GitHub URLs classify as NotGitHub
+	err = quick.Check(func(host, path string) bool {
+		if host == "" || strings.ContainsRune(host, 0) || strings.ContainsAny(host, " \t\n") {
+			return true
+		}
+		// Ensure host is not github.com (case-insensitive)
+		if strings.EqualFold(host, "github.com") {
+			return true
+		}
+
+		url := "https://" + host + "/" + path
+		if ClassifyGitHubURL(url) != NotGitHub {
+			t.Logf("expected NotGitHub for %q", url)
+			return false
+		}
+
+		return true
+	}, &cfg)
+	if err != nil {
+		t.Errorf("Non-GitHub URL classification failed: %v", err)
+	}
+
+	// Sub-property: Case-insensitive prefix matching
+	err = quick.Check(func(owner, repo string) bool {
+		if !isValidSegment(owner) || !isValidSegment(repo) {
+			return true
+		}
+
+		// Test various case combinations of the prefix
+		prefixes := []string{
+			"HTTPS://GITHUB.COM/",
+			"Https://GitHub.com/",
+			"https://GitHub.COM/",
+			"HTTPS://github.com/",
+			"https://GITHUB.COM/",
+		}
+
+		for _, prefix := range prefixes {
+			url := prefix + owner + "/" + repo
+			result := ClassifyGitHubURL(url)
+			if result != GitHubURLRepo {
+				t.Logf("expected GitHubURLRepo for case-variant %q, got %d", url, result)
+				return false
+			}
+		}
+
+		return true
+	}, &cfg)
+	if err != nil {
+		t.Errorf("Case-insensitive prefix classification failed: %v", err)
+	}
+}
+
+// isValidSegment checks if a string is a valid URL path segment for testing
+func isValidSegment(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.ContainsAny(s, "/ \t\n\r\x00") {
+		return false
+	}
+	return true
+}
+
+func TestClassifyGitHubURL(t *testing.T) {
+	tests := []struct {
+		input string
+		want  GitHubURLType
+	}{
+		// GitHubURLRepo: basic owner/repo patterns
+		{"https://github.com/owner/repo", GitHubURLRepo},
+		{"https://github.com/owner/repo/", GitHubURLRepo},
+		{"https://github.com/owner/repo.git", GitHubURLRepo},
+		{"https://github.com/owner/repo.git/", GitHubURLRepo},
+
+		// GitHubURLRepo: case-insensitive prefix
+		{"https://GITHUB.COM/owner/repo", GitHubURLRepo},
+		{"https://GitHub.Com/owner/repo", GitHubURLRepo},
+
+		// GitHubURLDirect: releases and archive paths
+		{"https://github.com/owner/repo/releases/tag/v1.0", GitHubURLDirect},
+		{"https://github.com/owner/repo/releases/download/v1.0/file.tar.gz", GitHubURLDirect},
+		{"https://github.com/owner/repo/archive/refs/tags/v1.0.tar.gz", GitHubURLDirect},
+
+		// GitHubURLUnsupported: other path segments beyond owner/repo
+		{"https://github.com/owner/repo/tree/main", GitHubURLUnsupported},
+		{"https://github.com/owner/repo/wiki", GitHubURLUnsupported},
+		{"https://github.com/owner/repo/issues", GitHubURLUnsupported},
+		{"https://github.com/owner/repo/pull/123", GitHubURLUnsupported},
+
+		// NotGitHub: non-GitHub URLs
+		{"https://example.com/file.tar.gz", NotGitHub},
+		{"http://github.com/owner/repo", NotGitHub},
+
+		// NotGitHub: incomplete GitHub URLs
+		{"https://github.com/", NotGitHub},
+		{"https://github.com/owner", NotGitHub},
+	}
+
+	for _, tt := range tests {
+		got := ClassifyGitHubURL(tt.input)
+		if got != tt.want {
+			t.Errorf("ClassifyGitHubURL(%q) = %d; want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestExtractOwnerRepo(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantOwner string
+		wantRepo  string
+		wantErr   bool
+	}{
+		// Valid inputs
+		{"https://github.com/owner/repo", "owner", "repo", false},
+		{"https://github.com/owner/repo/", "owner", "repo", false},
+		{"https://github.com/owner/repo.git", "owner", "repo", false},
+		{"https://github.com/owner/repo.git/", "owner", "repo", false},
+		{"https://GITHUB.COM/owner/repo", "owner", "repo", false},
+
+		// Invalid inputs
+		{"https://example.com/owner/repo", "", "", true},
+		{"https://github.com/", "", "", true},
+		{"https://github.com/owner", "", "", true},
+		{"http://github.com/owner/repo", "", "", true},
+	}
+
+	for _, tt := range tests {
+		owner, repo, err := ExtractOwnerRepo(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("ExtractOwnerRepo(%q) expected error, got nil", tt.input)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("ExtractOwnerRepo(%q) unexpected error: %v", tt.input, err)
+			}
+			if owner != tt.wantOwner {
+				t.Errorf("ExtractOwnerRepo(%q) owner = %q; want %q", tt.input, owner, tt.wantOwner)
+			}
+			if repo != tt.wantRepo {
+				t.Errorf("ExtractOwnerRepo(%q) repo = %q; want %q", tt.input, repo, tt.wantRepo)
+			}
+		}
+	}
+}
+
+// Empty-asset release filtering
+func TestPropertyFilterReleasesWithAssets(t *testing.T) {
+	cfg := quick.Config{MaxCount: 100}
+
+	err := quick.Check(func(n uint8) bool {
+		// Generate a random list of releases with varying asset counts.
+		// Use n to determine the number of releases (cap at 30 to keep tests fast).
+		count := int(n) % 30
+
+		var releases []GithubRelease
+		expectedNonEmpty := 0
+
+		for i := 0; i < count; i++ {
+			// Alternate between empty and non-empty asset lists based on index
+			var assets []GithubAsset
+			if i%3 != 0 {
+				// Non-empty: add 1 or more assets
+				numAssets := (i % 5) + 1
+				for j := 0; j < numAssets; j++ {
+					assets = append(assets, GithubAsset{
+						Name:               fmt.Sprintf("asset-%d-%d.tar.gz", i, j),
+						BrowserDownloadURL: fmt.Sprintf("https://example.com/download/%d/%d", i, j),
+					})
+				}
+				expectedNonEmpty++
+			}
+			releases = append(releases, GithubRelease{
+				TagName: fmt.Sprintf("v%d.0.0", i),
+				Assets:  assets,
+			})
+		}
+
+		filtered := FilterReleasesWithAssets(releases)
+
+		// Property 1: No release in the result has len(Assets) == 0
+		for _, r := range filtered {
+			if len(r.Assets) == 0 {
+				t.Logf("filtered result contains release %q with zero assets", r.TagName)
+				return false
+			}
+		}
+
+		// Property 2: Every release from the input with len(Assets) > 0 appears in the result
+		nonEmptyFromInput := make(map[string]bool)
+		for _, r := range releases {
+			if len(r.Assets) > 0 {
+				nonEmptyFromInput[r.TagName] = true
+			}
+		}
+		for _, r := range filtered {
+			if !nonEmptyFromInput[r.TagName] {
+				t.Logf("filtered result contains release %q that was not in non-empty input set", r.TagName)
+				return false
+			}
+			delete(nonEmptyFromInput, r.TagName)
+		}
+		if len(nonEmptyFromInput) > 0 {
+			t.Logf("some non-empty releases from input are missing in filtered result: %v", nonEmptyFromInput)
+			return false
+		}
+
+		// Property 3: The count of results equals the count of input releases with non-empty assets
+		if len(filtered) != expectedNonEmpty {
+			t.Logf("expected %d filtered releases, got %d", expectedNonEmpty, len(filtered))
+			return false
+		}
+
+		return true
+	}, &cfg)
+	if err != nil {
+		t.Errorf("FilterReleasesWithAssets property failed: %v", err)
+	}
+}
+
+// TestFetchReleaseList tests API error handling for FetchReleaseList
+func TestFetchReleaseList(t *testing.T) {
+	// Save and restore the original API base URL
+	originalBaseURL := githubAPIBaseURL
+	defer func() { githubAPIBaseURL = originalBaseURL }()
+
+	t.Run("token included as Bearer header", func(t *testing.T) {
+		var gotAuth string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]GithubRelease{
+				{TagName: "v1.0.0", Assets: []GithubAsset{{Name: "app.tar.gz", BrowserDownloadURL: "https://example.com/app.tar.gz"}}},
+			})
+		}))
+		defer server.Close()
+
+		githubAPIBaseURL = server.URL
+		_, err := FetchReleaseList("owner", "repo", "my-secret-token")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotAuth != "Bearer my-secret-token" {
+			t.Errorf("expected Authorization header 'Bearer my-secret-token', got %q", gotAuth)
+		}
+	})
+
+	t.Run("no Authorization header when token is empty", func(t *testing.T) {
+		var gotAuth string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]GithubRelease{
+				{TagName: "v1.0.0", Assets: []GithubAsset{{Name: "app.tar.gz", BrowserDownloadURL: "https://example.com/app.tar.gz"}}},
+			})
+		}))
+		defer server.Close()
+
+		githubAPIBaseURL = server.URL
+		_, err := FetchReleaseList("owner", "repo", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotAuth != "" {
+			t.Errorf("expected no Authorization header, got %q", gotAuth)
+		}
+	})
+
+	t.Run("rate limit error with X-RateLimit-Remaining 0", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer server.Close()
+
+		githubAPIBaseURL = server.URL
+		_, err := FetchReleaseList("owner", "repo", "")
+		if err == nil {
+			t.Fatal("expected error for rate limit, got nil")
+		}
+		if !strings.Contains(err.Error(), "github_token") {
+			t.Errorf("expected error to mention 'github_token', got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "rate limit") {
+			t.Errorf("expected error to mention 'rate limit', got: %v", err)
+		}
+	})
+
+	t.Run("404 error mentions no releases found", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		githubAPIBaseURL = server.URL
+		_, err := FetchReleaseList("owner", "repo", "")
+		if err == nil {
+			t.Fatal("expected error for 404, got nil")
+		}
+		if !strings.Contains(err.Error(), "no releases found") {
+			t.Errorf("expected error to mention 'no releases found', got: %v", err)
+		}
+	})
+
+	t.Run("other HTTP error includes status code", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		githubAPIBaseURL = server.URL
+		_, err := FetchReleaseList("owner", "repo", "")
+		if err == nil {
+			t.Fatal("expected error for 500, got nil")
+		}
+		if !strings.Contains(err.Error(), "500") {
+			t.Errorf("expected error to include status code '500', got: %v", err)
+		}
+	})
+
+	t.Run("valid 200 response filters releases without assets", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			releases := []GithubRelease{
+				{TagName: "v2.0.0", Assets: []GithubAsset{{Name: "app-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/v2"}}},
+				{TagName: "v1.5.0", Assets: []GithubAsset{}},
+				{TagName: "v1.0.0", Assets: []GithubAsset{{Name: "app-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/v1"}}},
+			}
+			json.NewEncoder(w).Encode(releases)
+		}))
+		defer server.Close()
+
+		githubAPIBaseURL = server.URL
+		releases, err := FetchReleaseList("owner", "repo", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(releases) != 2 {
+			t.Fatalf("expected 2 releases after filtering, got %d", len(releases))
+		}
+		if releases[0].TagName != "v2.0.0" {
+			t.Errorf("expected first release tag 'v2.0.0', got %q", releases[0].TagName)
+		}
+		if releases[1].TagName != "v1.0.0" {
+			t.Errorf("expected second release tag 'v1.0.0', got %q", releases[1].TagName)
+		}
+	})
+
+	t.Run("all releases have empty assets returns error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			releases := []GithubRelease{
+				{TagName: "v2.0.0", Assets: []GithubAsset{}},
+				{TagName: "v1.0.0", Assets: []GithubAsset{}},
+			}
+			json.NewEncoder(w).Encode(releases)
+		}))
+		defer server.Close()
+
+		githubAPIBaseURL = server.URL
+		_, err := FetchReleaseList("owner", "repo", "")
+		if err == nil {
+			t.Fatal("expected error when all releases have empty assets, got nil")
+		}
+		if !strings.Contains(err.Error(), "no installable releases") {
+			t.Errorf("expected error to mention 'no installable releases', got: %v", err)
+		}
+	})
+}
+
+// Release list display capping and ordering
+func TestPropertyFormatReleaseList(t *testing.T) {
+	config := &quick.Config{MaxCount: 100}
+
+	// Property: FormatReleaseList outputs at most min(N, 20) entries,
+	// each formatted as "  [i] tagname" in the same order as input.
+	err := quick.Check(func(n uint8) bool {
+		// Generate a release list of length 0..n (capped at 50 for reasonable test sizes)
+		count := int(n) % 51
+
+		releases := make([]GithubRelease, count)
+		for i := 0; i < count; i++ {
+			releases[i] = GithubRelease{
+				TagName: fmt.Sprintf("v%d.%d.%d", i, i+1, i+2),
+				Assets:  []GithubAsset{{Name: "asset.tar.gz", BrowserDownloadURL: "https://example.com/asset.tar.gz"}},
+			}
+		}
+
+		output := FormatReleaseList(releases, 20)
+
+		// Empty input should produce empty output
+		if count == 0 {
+			return output == ""
+		}
+
+		lines := strings.Split(output, "\n")
+
+		// Verify at most min(count, 20) entries
+		expectedCount := count
+		if expectedCount > 20 {
+			expectedCount = 20
+		}
+		if len(lines) != expectedCount {
+			t.Logf("expected %d lines, got %d (input count=%d)", expectedCount, len(lines), count)
+			return false
+		}
+
+		// Verify each entry is formatted correctly and in order
+		for i, line := range lines {
+			expectedLine := fmt.Sprintf("  [%d] %s", i+1, releases[i].TagName)
+			if line != expectedLine {
+				t.Logf("line %d: expected %q, got %q", i, expectedLine, line)
+				return false
+			}
+		}
+
+		return true
+	}, config)
+
+	if err != nil {
+		t.Errorf("Property 3 failed: %v", err)
+	}
+}
+
+// Version flag matching with v-prefix normalization
+func TestPropertyVersionFlagMatching(t *testing.T) {
+	config := &quick.Config{MaxCount: 100}
+
+	// Property: SelectRelease finds a release whose tag matches the version flag
+	// regardless of v-prefix presence on either the flag or the tag.
+	// The match is symmetric with respect to v-prefix.
+	err := quick.Check(func(major, minor, patch uint8) bool {
+		// Generate a non-empty version string that doesn't start with 'v'
+		// Use major.minor.patch format to ensure valid version-like strings
+		version := fmt.Sprintf("%d.%d.%d", major%100, minor%100, patch%100)
+
+		// Each release needs at least one asset (since we're testing SelectRelease, not filtering)
+		dummyAsset := []GithubAsset{{Name: "app.tar.gz", BrowserDownloadURL: "https://example.com/app.tar.gz"}}
+
+		// Case 1: Tag has v-prefix, flag does not
+		// Release tag: "v1.2.3", flag: "1.2.3" -> should match
+		releases1 := []GithubRelease{
+			{TagName: "v" + version, Assets: dummyAsset},
+		}
+		result, err := SelectRelease(releases1, version, false)
+		if err != nil || result == nil {
+			t.Logf("Case 1 failed: tag='v%s', flag='%s', err=%v", version, version, err)
+			return false
+		}
+
+		// Case 2: Tag has no v-prefix, flag has v-prefix
+		// Release tag: "1.2.3", flag: "v1.2.3" -> should match
+		releases2 := []GithubRelease{
+			{TagName: version, Assets: dummyAsset},
+		}
+		result, err = SelectRelease(releases2, "v"+version, false)
+		if err != nil || result == nil {
+			t.Logf("Case 2 failed: tag='%s', flag='v%s', err=%v", version, version, err)
+			return false
+		}
+
+		// Case 3: Both tag and flag have v-prefix
+		// Release tag: "v1.2.3", flag: "v1.2.3" -> should match
+		releases3 := []GithubRelease{
+			{TagName: "v" + version, Assets: dummyAsset},
+		}
+		result, err = SelectRelease(releases3, "v"+version, false)
+		if err != nil || result == nil {
+			t.Logf("Case 3 failed: tag='v%s', flag='v%s', err=%v", version, version, err)
+			return false
+		}
+
+		// Case 4: Neither tag nor flag have v-prefix
+		// Release tag: "1.2.3", flag: "1.2.3" -> should match
+		releases4 := []GithubRelease{
+			{TagName: version, Assets: dummyAsset},
+		}
+		result, err = SelectRelease(releases4, version, false)
+		if err != nil || result == nil {
+			t.Logf("Case 4 failed: tag='%s', flag='%s', err=%v", version, version, err)
+			return false
+		}
+
+		return true
+	}, config)
+
+	if err != nil {
+		t.Errorf("Property 6 (version flag matching) failed: %v", err)
+	}
+}
+
+func TestSelectRelease(t *testing.T) {
+	// Helper to create a release with at least one asset
+	makeRelease := func(tag string) GithubRelease {
+		return GithubRelease{
+			TagName: tag,
+			Assets:  []GithubAsset{{Name: "app-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/" + tag}},
+		}
+	}
+
+	t.Run("empty releases list returns error", func(t *testing.T) {
+		_, err := SelectRelease(nil, "", false)
+		if err == nil {
+			t.Fatal("expected error for empty releases, got nil")
+		}
+		if !strings.Contains(err.Error(), "no releases available") {
+			t.Errorf("expected error to mention 'no releases available', got: %v", err)
+		}
+	})
+
+	t.Run("single release auto-selects without prompting", func(t *testing.T) {
+		releases := []GithubRelease{makeRelease("v1.0.0")}
+		got, err := SelectRelease(releases, "", false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.TagName != "v1.0.0" {
+			t.Errorf("expected tag 'v1.0.0', got %q", got.TagName)
+		}
+	})
+
+	t.Run("auto-confirm selects first (latest) release", func(t *testing.T) {
+		releases := []GithubRelease{
+			makeRelease("v3.0.0"),
+			makeRelease("v2.0.0"),
+			makeRelease("v1.0.0"),
+		}
+		got, err := SelectRelease(releases, "", true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.TagName != "v3.0.0" {
+			t.Errorf("expected latest tag 'v3.0.0', got %q", got.TagName)
+		}
+	})
+
+	t.Run("version flag matches tag with v-prefix on tag", func(t *testing.T) {
+		releases := []GithubRelease{
+			makeRelease("v2.0.0"),
+			makeRelease("v1.2.3"),
+			makeRelease("v1.0.0"),
+		}
+		got, err := SelectRelease(releases, "1.2.3", false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.TagName != "v1.2.3" {
+			t.Errorf("expected tag 'v1.2.3', got %q", got.TagName)
+		}
+	})
+
+	t.Run("version flag with v-prefix matches tag without v-prefix", func(t *testing.T) {
+		releases := []GithubRelease{
+			makeRelease("2.0.0"),
+			makeRelease("1.2.3"),
+			makeRelease("1.0.0"),
+		}
+		got, err := SelectRelease(releases, "v1.2.3", false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.TagName != "1.2.3" {
+			t.Errorf("expected tag '1.2.3', got %q", got.TagName)
+		}
+	})
+
+	t.Run("version flag with v-prefix matches tag with v-prefix (exact)", func(t *testing.T) {
+		releases := []GithubRelease{
+			makeRelease("v2.0.0"),
+			makeRelease("v1.2.3"),
+			makeRelease("v1.0.0"),
+		}
+		got, err := SelectRelease(releases, "v1.2.3", false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.TagName != "v1.2.3" {
+			t.Errorf("expected tag 'v1.2.3', got %q", got.TagName)
+		}
+	})
+
+	t.Run("version flag with no matching tag returns error listing available tags", func(t *testing.T) {
+		releases := []GithubRelease{
+			makeRelease("v3.0.0"),
+			makeRelease("v2.0.0"),
+			makeRelease("v1.0.0"),
+		}
+		_, err := SelectRelease(releases, "9.9.9", false)
+		if err == nil {
+			t.Fatal("expected error for non-matching version, got nil")
+		}
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "9.9.9") {
+			t.Errorf("expected error to mention the requested version '9.9.9', got: %v", errMsg)
+		}
+		// Verify available tags are listed in the error
+		if !strings.Contains(errMsg, "v3.0.0") {
+			t.Errorf("expected error to list available tag 'v3.0.0', got: %v", errMsg)
+		}
+		if !strings.Contains(errMsg, "v2.0.0") {
+			t.Errorf("expected error to list available tag 'v2.0.0', got: %v", errMsg)
+		}
+		if !strings.Contains(errMsg, "v1.0.0") {
+			t.Errorf("expected error to list available tag 'v1.0.0', got: %v", errMsg)
+		}
+	})
+}
+
+// Version extraction from release tag
+func TestPropertyVersionExtraction(t *testing.T) {
+	config := &quick.Config{MaxCount: 100}
+
+	// Property 5a: When versionFlag is empty and tag starts with 'v' or 'V',
+	// the result equals the tag with the first character removed.
+	err := quick.Check(func(suffix []byte) bool {
+		// Filter out empty suffixes and strings with null bytes
+		if len(suffix) == 0 {
+			return true
+		}
+		for _, b := range suffix {
+			if b == 0 {
+				return true
+			}
+		}
+		s := string(suffix)
+
+		// Test with lowercase 'v' prefix
+		tagLower := "v" + s
+		resultLower := ExtractVersion(tagLower, "")
+		if resultLower != s {
+			t.Logf("5a failed: tag=%q, expected=%q, got=%q", tagLower, s, resultLower)
+			return false
+		}
+
+		// Test with uppercase 'V' prefix
+		tagUpper := "V" + s
+		resultUpper := ExtractVersion(tagUpper, "")
+		if resultUpper != s {
+			t.Logf("5a failed: tag=%q, expected=%q, got=%q", tagUpper, s, resultUpper)
+			return false
+		}
+
+		return true
+	}, config)
+	if err != nil {
+		t.Errorf("Property 5a (v/V prefix stripping) failed: %v", err)
+	}
+
+	// Property 5b: When versionFlag is empty and tag does NOT start with 'v' or 'V',
+	// the result equals the tag unchanged.
+	err = quick.Check(func(tag string) bool {
+		// Filter out empty strings and strings with null bytes
+		if len(tag) == 0 {
+			return true
+		}
+		for _, b := range []byte(tag) {
+			if b == 0 {
+				return true
+			}
+		}
+
+		// Skip tags that start with 'v' or 'V', those are covered by 5a
+		if tag[0] == 'v' || tag[0] == 'V' {
+			return true
+		}
+
+		result := ExtractVersion(tag, "")
+		if result != tag {
+			t.Logf("5b failed: tag=%q, expected=%q, got=%q", tag, tag, result)
+			return false
+		}
+		return true
+	}, config)
+	if err != nil {
+		t.Errorf("Property 5b (non-v tag unchanged) failed: %v", err)
+	}
+
+	// Property 5c: When versionFlag is non-empty, the result always equals versionFlag
+	// regardless of the tag value.
+	err = quick.Check(func(tag, versionFlag string) bool {
+		// Filter out empty versionFlag and strings with null bytes
+		if len(versionFlag) == 0 {
+			return true
+		}
+		for _, b := range []byte(versionFlag) {
+			if b == 0 {
+				return true
+			}
+		}
+		for _, b := range []byte(tag) {
+			if b == 0 {
+				return true
+			}
+		}
+
+		result := ExtractVersion(tag, versionFlag)
+		if result != versionFlag {
+			t.Logf("5c failed: tag=%q, versionFlag=%q, expected=%q, got=%q", tag, versionFlag, versionFlag, result)
+			return false
+		}
+		return true
+	}, config)
+	if err != nil {
+		t.Errorf("Property 5c (versionFlag override) failed: %v", err)
+	}
+}
+
+func TestSelectAsset(t *testing.T) {
+	// Helper to create platform-compatible asset names based on current OS
+	compatibleAssetName := func() string {
+		if runtime.GOOS == "darwin" {
+			return "app-darwin-arm64.tar.gz"
+		}
+		return "app-linux-amd64.tar.gz"
+	}
+
+	// Helper to create non-compatible asset names (always the "other" platform)
+	incompatibleAssetName := func(suffix string) string {
+		if runtime.GOOS == "darwin" {
+			return "app-linux-amd64" + suffix
+		}
+		return "app-windows-amd64" + suffix
+	}
+
+	t.Run("auto-confirm with compatible asset returns that asset", func(t *testing.T) {
+		release := &GithubRelease{
+			TagName: "v1.0.0",
+			Assets: []GithubAsset{
+				{Name: incompatibleAssetName(".zip"), BrowserDownloadURL: "https://example.com/incompat.zip"},
+				{Name: compatibleAssetName(), BrowserDownloadURL: "https://example.com/compat.tar.gz"},
+				{Name: incompatibleAssetName(".tar.gz"), BrowserDownloadURL: "https://example.com/incompat.tar.gz"},
+			},
+		}
+
+		got, err := SelectAsset(release, true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Name != compatibleAssetName() {
+			t.Errorf("expected asset %q, got %q", compatibleAssetName(), got.Name)
+		}
+		if got.BrowserDownloadURL != "https://example.com/compat.tar.gz" {
+			t.Errorf("expected URL 'https://example.com/compat.tar.gz', got %q", got.BrowserDownloadURL)
+		}
+	})
+
+	t.Run("auto-confirm with no compatible asset returns error", func(t *testing.T) {
+		release := &GithubRelease{
+			TagName: "v1.0.0",
+			Assets: []GithubAsset{
+				{Name: incompatibleAssetName(".zip"), BrowserDownloadURL: "https://example.com/a.zip"},
+				{Name: incompatibleAssetName(".tar.gz"), BrowserDownloadURL: "https://example.com/b.tar.gz"},
+			},
+		}
+
+		_, err := SelectAsset(release, true)
+		if err == nil {
+			t.Fatal("expected error when no compatible asset found with auto-confirm, got nil")
+		}
+		if !strings.Contains(err.Error(), "no compatible asset found") {
+			t.Errorf("expected error to mention 'no compatible asset found', got: %v", err)
+		}
+	})
+
+	t.Run("auto-confirm with empty assets returns error", func(t *testing.T) {
+		release := &GithubRelease{
+			TagName: "v1.0.0",
+			Assets:  []GithubAsset{},
+		}
+
+		_, err := SelectAsset(release, true)
+		if err == nil {
+			t.Fatal("expected error for empty assets, got nil")
+		}
+		if !strings.Contains(err.Error(), "no assets available") {
+			t.Errorf("expected error to mention 'no assets available', got: %v", err)
+		}
+	})
+
+	t.Run("interactive with compatible asset user presses Enter confirms selection", func(t *testing.T) {
+		release := &GithubRelease{
+			TagName: "v1.0.0",
+			Assets: []GithubAsset{
+				{Name: incompatibleAssetName(".zip"), BrowserDownloadURL: "https://example.com/incompat.zip"},
+				{Name: compatibleAssetName(), BrowserDownloadURL: "https://example.com/compat.tar.gz"},
+			},
+		}
+
+		// Mock stdin: user presses Enter (empty line)
+		oldStdin := os.Stdin
+		defer func() { os.Stdin = oldStdin }()
+
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("failed to create pipe: %v", err)
+		}
+		os.Stdin = r
+
+		go func() {
+			w.Write([]byte("\n"))
+			w.Close()
+		}()
+
+		got, err := SelectAsset(release, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Name != compatibleAssetName() {
+			t.Errorf("expected confirmed asset %q, got %q", compatibleAssetName(), got.Name)
+		}
+	})
+
+	t.Run("interactive with compatible asset user enters number selects that asset", func(t *testing.T) {
+		release := &GithubRelease{
+			TagName: "v1.0.0",
+			Assets: []GithubAsset{
+				{Name: incompatibleAssetName(".zip"), BrowserDownloadURL: "https://example.com/first.zip"},
+				{Name: compatibleAssetName(), BrowserDownloadURL: "https://example.com/compat.tar.gz"},
+				{Name: incompatibleAssetName(".tar.gz"), BrowserDownloadURL: "https://example.com/third.tar.gz"},
+			},
+		}
+
+		// Mock stdin: user enters "1" to select the first asset
+		oldStdin := os.Stdin
+		defer func() { os.Stdin = oldStdin }()
+
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("failed to create pipe: %v", err)
+		}
+		os.Stdin = r
+
+		go func() {
+			w.Write([]byte("1\n"))
+			w.Close()
+		}()
+
+		got, err := SelectAsset(release, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// User selected asset [1] which is the first in the list
+		if got.Name != incompatibleAssetName(".zip") {
+			t.Errorf("expected user-selected asset %q, got %q", incompatibleAssetName(".zip"), got.Name)
+		}
+	})
+
+	t.Run("interactive with no compatible asset user selects valid number", func(t *testing.T) {
+		release := &GithubRelease{
+			TagName: "v1.0.0",
+			Assets: []GithubAsset{
+				{Name: incompatibleAssetName(".zip"), BrowserDownloadURL: "https://example.com/a.zip"},
+				{Name: incompatibleAssetName(".tar.gz"), BrowserDownloadURL: "https://example.com/b.tar.gz"},
+			},
+		}
+
+		// Mock stdin: user enters "2" to select the second asset
+		oldStdin := os.Stdin
+		defer func() { os.Stdin = oldStdin }()
+
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("failed to create pipe: %v", err)
+		}
+		os.Stdin = r
+
+		go func() {
+			w.Write([]byte("2\n"))
+			w.Close()
+		}()
+
+		got, err := SelectAsset(release, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Name != incompatibleAssetName(".tar.gz") {
+			t.Errorf("expected asset %q, got %q", incompatibleAssetName(".tar.gz"), got.Name)
+		}
+	})
+
+	t.Run("interactive invalid selection re-prompts then accepts valid input", func(t *testing.T) {
+		release := &GithubRelease{
+			TagName: "v1.0.0",
+			Assets: []GithubAsset{
+				{Name: incompatibleAssetName(".zip"), BrowserDownloadURL: "https://example.com/a.zip"},
+				{Name: incompatibleAssetName(".tar.gz"), BrowserDownloadURL: "https://example.com/b.tar.gz"},
+			},
+		}
+
+		// Mock stdin: user enters invalid input first, then valid "1"
+		oldStdin := os.Stdin
+		defer func() { os.Stdin = oldStdin }()
+
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("failed to create pipe: %v", err)
+		}
+		os.Stdin = r
+
+		go func() {
+			// First: invalid number (out of range)
+			w.Write([]byte("99\n"))
+			// Second: non-numeric input
+			w.Write([]byte("abc\n"))
+			// Third: valid selection
+			w.Write([]byte("1\n"))
+			w.Close()
+		}()
+
+		got, err := SelectAsset(release, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Name != incompatibleAssetName(".zip") {
+			t.Errorf("expected asset %q after re-prompt, got %q", incompatibleAssetName(".zip"), got.Name)
+		}
+	})
+}
+
+// Update URL construction from repository
+func TestPropertyUpdateURLConstruction(t *testing.T) {
+	config := &quick.Config{MaxCount: 100}
+
+	// Property: For any valid owner/repo pair (non-empty, no whitespace, no null bytes),
+	// ConstructUpdateURL returns exactly "https://github.com/{owner}/{repo}"
+	err := quick.Check(func(owner, repo string) bool {
+		// Filter: owner and repo must be non-empty, no whitespace, no null bytes
+		if owner == "" || repo == "" {
+			return true // skip invalid inputs
+		}
+		for _, r := range owner {
+			if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == 0 {
+				return true // skip
+			}
+		}
+		for _, r := range repo {
+			if r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == 0 {
+				return true // skip
+			}
+		}
+
+		got := ConstructUpdateURL(owner, repo)
+		expected := "https://github.com/" + owner + "/" + repo
+
+		// Verify exact match
+		if got != expected {
+			t.Errorf("ConstructUpdateURL(%q, %q) = %q, want %q", owner, repo, got, expected)
+			return false
+		}
+
+		// Verify no trailing slash
+		if strings.HasSuffix(got, "/") {
+			t.Errorf("ConstructUpdateURL(%q, %q) has trailing slash: %q", owner, repo, got)
+			return false
+		}
+
+		// Verify no .git suffix
+		if strings.HasSuffix(got, ".git") {
+			t.Errorf("ConstructUpdateURL(%q, %q) has .git suffix: %q", owner, repo, got)
+			return false
+		}
+
+		// Verify proper format: starts with https://github.com/
+		if !strings.HasPrefix(got, "https://github.com/") {
+			t.Errorf("ConstructUpdateURL(%q, %q) missing prefix: %q", owner, repo, got)
+			return false
+		}
+
+		return true
+	}, config)
+
+	if err != nil {
+		t.Errorf("Property 4 failed: %v", err)
+	}
+}
+
+// TestGitHubInstallIntegration tests the full GitHub release install flow using a mock server.
+// It verifies: repo URL -> API query -> release selection -> asset selection -> InstallApp handoff,
+// including correct update_url and version in the registry, flag overrides, and download failure handling.
+func TestGitHubInstallIntegration(t *testing.T) {
+	// Build platform-appropriate asset name
+	osName := runtime.GOOS
+	archName := runtime.GOARCH
+	if archName == "amd64" {
+		archName = "x86_64"
+	}
+
+	t.Run("FullFlow", func(t *testing.T) {
+		tempDir := t.TempDir()
+		registryPathOverride = filepath.Join(tempDir, "registry.json")
+		defer func() { registryPathOverride = "" }()
+
+		// Track which API paths were requested
+		var apiPathRequested string
+
+		// Create mock server that serves both the GitHub Releases API and asset downloads
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/releases") {
+				// GitHub Releases API endpoint
+				apiPathRequested = r.URL.Path
+				assetName := fmt.Sprintf("testrepo-v1.5.0-%s-%s.zip", osName, archName)
+				releases := []GithubRelease{
+					{
+						TagName: "v1.5.0",
+						Assets: []GithubAsset{
+							{
+								Name:               assetName,
+								BrowserDownloadURL: fmt.Sprintf("http://%s/downloads/%s", r.Host, assetName),
+							},
+						},
+					},
+					{
+						TagName: "v1.4.0",
+						Assets: []GithubAsset{
+							{
+								Name:               fmt.Sprintf("testrepo-v1.4.0-%s-%s.zip", osName, archName),
+								BrowserDownloadURL: fmt.Sprintf("http://%s/downloads/testrepo-v1.4.0-%s-%s.zip", r.Host, osName, archName),
+							},
+						},
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(releases)
+				return
+			}
+
+			if strings.HasPrefix(r.URL.Path, "/downloads/") {
+				// Asset download endpoint, serve a real zip
+				w.Header().Set("Content-Type", "application/zip")
+				z := zip.NewWriter(w)
+				header := &zip.FileHeader{
+					Name:   "testrepo",
+					Method: zip.Deflate,
+				}
+				header.SetMode(0755)
+				fw, _ := z.CreateHeader(header)
+				fw.Write([]byte("#!/bin/bash\necho 'hello'\n"))
+				z.Close()
+				return
+			}
+
+			http.NotFound(w, r)
+		}))
+		defer server.Close()
+
+		// Override the GitHub API base URL to point to our mock server
+		oldBaseURL := githubAPIBaseURL
+		githubAPIBaseURL = server.URL
+		defer func() { githubAPIBaseURL = oldBaseURL }()
+
+		config := &Config{
+			OptDir:      filepath.Join(tempDir, "opt"),
+			BinDir:      filepath.Join(tempDir, "bin"),
+			AppsDir:     filepath.Join(tempDir, "apps"),
+			IconsDir:    filepath.Join(tempDir, "icons"),
+			AutoConfirm: true,
+		}
+		reg := &Registry{Apps: make(map[string]AppMetadata)}
+
+		// Step 1: Call ResolveGitHubInstall to get the download URL and resolved options
+		opts := InstallOptions{}
+		downloadURL, resolvedOpts, err := ResolveGitHubInstall("https://github.com/testowner/testrepo", opts, config)
+		if err != nil {
+			t.Fatalf("ResolveGitHubInstall failed: %v", err)
+		}
+
+		// Verify correct API endpoint was called with owner/repo path
+		expectedAPIPath := "/repos/testowner/testrepo/releases"
+		if apiPathRequested != expectedAPIPath {
+			t.Errorf("expected API path %q, got %q", expectedAPIPath, apiPathRequested)
+		}
+
+		// Verify the download URL points to the mock server's asset endpoint
+		expectedAssetName := fmt.Sprintf("testrepo-v1.5.0-%s-%s.zip", osName, archName)
+		if !strings.Contains(downloadURL, "/downloads/"+expectedAssetName) {
+			t.Errorf("expected download URL to contain /downloads/%s, got %q", expectedAssetName, downloadURL)
+		}
+
+		// Verify ForcedVersion is the tag with 'v' stripped
+		if resolvedOpts.ForcedVersion != "1.5.0" {
+			t.Errorf("expected ForcedVersion to be '1.5.0', got %q", resolvedOpts.ForcedVersion)
+		}
+
+		// Verify ForcedSource is the GitHub repo URL
+		if resolvedOpts.ForcedSource != "https://github.com/testowner/testrepo" {
+			t.Errorf("expected ForcedSource to be 'https://github.com/testowner/testrepo', got %q", resolvedOpts.ForcedSource)
+		}
+
+		// Step 2: Call InstallApp with the resolved URL
+		err = InstallApp(downloadURL, resolvedOpts, config, reg)
+		if err != nil {
+			t.Fatalf("InstallApp failed: %v", err)
+		}
+
+		// Verify the app is registered with correct version and update_url
+		app, exists := reg.Apps["testrepo"]
+		if !exists {
+			t.Fatalf("expected 'testrepo' to be registered in the registry")
+		}
+		if app.Version != "1.5.0" {
+			t.Errorf("expected registered version to be '1.5.0', got %q", app.Version)
+		}
+		if app.UpdateURL != "https://github.com/testowner/testrepo" {
+			t.Errorf("expected UpdateURL to be 'https://github.com/testowner/testrepo', got %q", app.UpdateURL)
+		}
+	})
+
+	t.Run("VersionFlagOverride", func(t *testing.T) {
+		tempDir := t.TempDir()
+		registryPathOverride = filepath.Join(tempDir, "registry.json")
+		defer func() { registryPathOverride = "" }()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/releases") {
+				assetName := fmt.Sprintf("testrepo-%s-%s.zip", osName, archName)
+				releases := []GithubRelease{
+					{
+						TagName: "v2.0.0",
+						Assets: []GithubAsset{
+							{
+								Name:               assetName,
+								BrowserDownloadURL: fmt.Sprintf("http://%s/downloads/v2.0.0/%s", r.Host, assetName),
+							},
+						},
+					},
+					{
+						TagName: "v1.0.0",
+						Assets: []GithubAsset{
+							{
+								Name:               assetName,
+								BrowserDownloadURL: fmt.Sprintf("http://%s/downloads/v1.0.0/%s", r.Host, assetName),
+							},
+						},
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(releases)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/downloads/") {
+				w.Header().Set("Content-Type", "application/zip")
+				z := zip.NewWriter(w)
+				header := &zip.FileHeader{Name: "testrepo", Method: zip.Deflate}
+				header.SetMode(0755)
+				fw, _ := z.CreateHeader(header)
+				fw.Write([]byte("#!/bin/bash\necho 'hello'\n"))
+				z.Close()
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer server.Close()
+
+		oldBaseURL := githubAPIBaseURL
+		githubAPIBaseURL = server.URL
+		defer func() { githubAPIBaseURL = oldBaseURL }()
+
+		config := &Config{
+			OptDir:      filepath.Join(tempDir, "opt"),
+			BinDir:      filepath.Join(tempDir, "bin"),
+			AppsDir:     filepath.Join(tempDir, "apps"),
+			IconsDir:    filepath.Join(tempDir, "icons"),
+			AutoConfirm: true,
+		}
+
+		// Provide --version flag to select a specific release
+		opts := InstallOptions{ForcedVersion: "1.0.0"}
+		_, resolvedOpts, err := ResolveGitHubInstall("https://github.com/testowner/testrepo", opts, config)
+		if err != nil {
+			t.Fatalf("ResolveGitHubInstall with --version failed: %v", err)
+		}
+
+		// When --version is provided, ForcedVersion should use the flag value (not the tag)
+		if resolvedOpts.ForcedVersion != "1.0.0" {
+			t.Errorf("expected ForcedVersion to be '1.0.0' (flag value), got %q", resolvedOpts.ForcedVersion)
+		}
+	})
+
+	t.Run("SourceFlagOverride", func(t *testing.T) {
+		tempDir := t.TempDir()
+		registryPathOverride = filepath.Join(tempDir, "registry.json")
+		defer func() { registryPathOverride = "" }()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/releases") {
+				assetName := fmt.Sprintf("testrepo-%s-%s.zip", osName, archName)
+				releases := []GithubRelease{
+					{
+						TagName: "v3.0.0",
+						Assets: []GithubAsset{
+							{
+								Name:               assetName,
+								BrowserDownloadURL: fmt.Sprintf("http://%s/downloads/%s", r.Host, assetName),
+							},
+						},
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(releases)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/downloads/") {
+				w.Header().Set("Content-Type", "application/zip")
+				z := zip.NewWriter(w)
+				header := &zip.FileHeader{Name: "testrepo", Method: zip.Deflate}
+				header.SetMode(0755)
+				fw, _ := z.CreateHeader(header)
+				fw.Write([]byte("#!/bin/bash\necho 'hello'\n"))
+				z.Close()
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer server.Close()
+
+		oldBaseURL := githubAPIBaseURL
+		githubAPIBaseURL = server.URL
+		defer func() { githubAPIBaseURL = oldBaseURL }()
+
+		config := &Config{
+			OptDir:      filepath.Join(tempDir, "opt"),
+			BinDir:      filepath.Join(tempDir, "bin"),
+			AppsDir:     filepath.Join(tempDir, "apps"),
+			IconsDir:    filepath.Join(tempDir, "icons"),
+			AutoConfirm: true,
+		}
+		reg := &Registry{Apps: make(map[string]AppMetadata)}
+
+		// Provide --source flag to override the update_url
+		opts := InstallOptions{ForcedSource: "https://custom-source.example.com/repo"}
+		downloadURL, resolvedOpts, err := ResolveGitHubInstall("https://github.com/testowner/testrepo", opts, config)
+		if err != nil {
+			t.Fatalf("ResolveGitHubInstall with --source failed: %v", err)
+		}
+
+		// ForcedSource should use the flag value, not the GitHub repo URL
+		if resolvedOpts.ForcedSource != "https://custom-source.example.com/repo" {
+			t.Errorf("expected ForcedSource to be 'https://custom-source.example.com/repo', got %q", resolvedOpts.ForcedSource)
+		}
+
+		// Install and verify the registry has the custom source
+		err = InstallApp(downloadURL, resolvedOpts, config, reg)
+		if err != nil {
+			t.Fatalf("InstallApp failed: %v", err)
+		}
+
+		app, exists := reg.Apps["testrepo"]
+		if !exists {
+			t.Fatalf("expected 'testrepo' to be registered")
+		}
+		if app.UpdateURL != "https://custom-source.example.com/repo" {
+			t.Errorf("expected UpdateURL to be 'https://custom-source.example.com/repo', got %q", app.UpdateURL)
+		}
+	})
+
+	t.Run("NameFlagPassThrough", func(t *testing.T) {
+		tempDir := t.TempDir()
+		registryPathOverride = filepath.Join(tempDir, "registry.json")
+		defer func() { registryPathOverride = "" }()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/releases") {
+				assetName := fmt.Sprintf("testrepo-%s-%s.zip", osName, archName)
+				releases := []GithubRelease{
+					{
+						TagName: "v1.0.0",
+						Assets: []GithubAsset{
+							{
+								Name:               assetName,
+								BrowserDownloadURL: fmt.Sprintf("http://%s/downloads/%s", r.Host, assetName),
+							},
+						},
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(releases)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/downloads/") {
+				w.Header().Set("Content-Type", "application/zip")
+				z := zip.NewWriter(w)
+				header := &zip.FileHeader{Name: "mybin", Method: zip.Deflate}
+				header.SetMode(0755)
+				fw, _ := z.CreateHeader(header)
+				fw.Write([]byte("#!/bin/bash\necho 'hello'\n"))
+				z.Close()
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer server.Close()
+
+		oldBaseURL := githubAPIBaseURL
+		githubAPIBaseURL = server.URL
+		defer func() { githubAPIBaseURL = oldBaseURL }()
+
+		config := &Config{
+			OptDir:      filepath.Join(tempDir, "opt"),
+			BinDir:      filepath.Join(tempDir, "bin"),
+			AppsDir:     filepath.Join(tempDir, "apps"),
+			IconsDir:    filepath.Join(tempDir, "icons"),
+			AutoConfirm: true,
+		}
+		reg := &Registry{Apps: make(map[string]AppMetadata)}
+
+		// Provide --name flag
+		opts := InstallOptions{ForcedName: "custom-name"}
+		downloadURL, resolvedOpts, err := ResolveGitHubInstall("https://github.com/testowner/testrepo", opts, config)
+		if err != nil {
+			t.Fatalf("ResolveGitHubInstall with --name failed: %v", err)
+		}
+
+		// ForcedName should be preserved
+		if resolvedOpts.ForcedName != "custom-name" {
+			t.Errorf("expected ForcedName to be 'custom-name', got %q", resolvedOpts.ForcedName)
+		}
+
+		// Install and verify the registry uses the custom name
+		err = InstallApp(downloadURL, resolvedOpts, config, reg)
+		if err != nil {
+			t.Fatalf("InstallApp failed: %v", err)
+		}
+
+		_, exists := reg.Apps["custom-name"]
+		if !exists {
+			t.Fatalf("expected 'custom-name' to be registered in the registry")
+		}
+	})
+
+	t.Run("DownloadFailure", func(t *testing.T) {
+		tempDir := t.TempDir()
+		registryPathOverride = filepath.Join(tempDir, "registry.json")
+		defer func() { registryPathOverride = "" }()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/releases") {
+				assetName := fmt.Sprintf("testrepo-%s-%s.zip", osName, archName)
+				releases := []GithubRelease{
+					{
+						TagName: "v1.0.0",
+						Assets: []GithubAsset{
+							{
+								Name:               assetName,
+								BrowserDownloadURL: fmt.Sprintf("http://%s/downloads/%s", r.Host, assetName),
+							},
+						},
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(releases)
+				return
+			}
+			// Return 404 for asset download to simulate download failure
+			http.NotFound(w, r)
+		}))
+		defer server.Close()
+
+		oldBaseURL := githubAPIBaseURL
+		githubAPIBaseURL = server.URL
+		defer func() { githubAPIBaseURL = oldBaseURL }()
+
+		config := &Config{
+			OptDir:      filepath.Join(tempDir, "opt"),
+			BinDir:      filepath.Join(tempDir, "bin"),
+			AppsDir:     filepath.Join(tempDir, "apps"),
+			IconsDir:    filepath.Join(tempDir, "icons"),
+			AutoConfirm: true,
+		}
+		reg := &Registry{Apps: make(map[string]AppMetadata)}
+
+		// Resolve should succeed (API works fine)
+		opts := InstallOptions{}
+		downloadURL, resolvedOpts, err := ResolveGitHubInstall("https://github.com/testowner/testrepo", opts, config)
+		if err != nil {
+			t.Fatalf("ResolveGitHubInstall failed: %v", err)
+		}
+
+		// InstallApp should fail because the download returns 404
+		err = InstallApp(downloadURL, resolvedOpts, config, reg)
+		if err == nil {
+			t.Fatalf("expected InstallApp to fail on download failure, but it succeeded")
+		}
+
+		// Verify the error mentions download failure
+		if !strings.Contains(err.Error(), "download failed") {
+			t.Errorf("expected error to mention 'download failed', got: %v", err)
+		}
+
+		// Verify the app was NOT registered
+		if _, exists := reg.Apps["testrepo"]; exists {
+			t.Errorf("expected app to NOT be registered after download failure")
+		}
+	})
+}
