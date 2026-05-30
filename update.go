@@ -455,11 +455,56 @@ func ResolveRelativeURL(baseStr, refStr string) string {
 	return base.ResolveReference(ref).String()
 }
 
+// parsePreRelease extracts the pre-release type and numeric suffix from a
+// pre-release string. For example, "rc1" returns ("rc", 1) and "alpha" returns ("alpha", 0).
+func parsePreRelease(suffix string) (string, int) {
+	for _, t := range []string{"alpha", "beta", "rc"} {
+		if strings.HasPrefix(suffix, t) {
+			numStr := suffix[len(t):]
+			if numStr == "" {
+				return t, 0
+			}
+			var n int
+			fmt.Sscanf(numStr, "%d", &n)
+			return t, n
+		}
+	}
+	return suffix, 0
+}
+
+// preReleaseRank maps a pre-release type to a numeric rank for comparison.
+// alpha=1, beta=2, rc=3, unknown=0.
+func preReleaseRank(preType string) int {
+	switch preType {
+	case "alpha":
+		return 1
+	case "beta":
+		return 2
+	case "rc":
+		return 3
+	default:
+		return 0
+	}
+}
+
 // CompareVersions returns 1 if v1 > v2, -1 if v1 < v2, and 0 if v1 == v2
 func CompareVersions(v1, v2 string) int {
 	v1 = strings.TrimPrefix(strings.ToLower(v1), "v")
 	v2 = strings.TrimPrefix(strings.ToLower(v2), "v")
 
+	// Split pre-release suffix from the version string.
+	// The pre-release suffix is attached to the last segment after a hyphen.
+	var pre1, pre2 string
+	if idx := strings.Index(v1, "-"); idx >= 0 {
+		pre1 = v1[idx+1:]
+		v1 = v1[:idx]
+	}
+	if idx := strings.Index(v2, "-"); idx >= 0 {
+		pre2 = v2[idx+1:]
+		v2 = v2[:idx]
+	}
+
+	// Compare base version segments numerically (existing logic preserved)
 	p1 := strings.Split(v1, ".")
 	p2 := strings.Split(v2, ".")
 
@@ -483,6 +528,37 @@ func CompareVersions(v1, v2 string) int {
 		if n1 < n2 {
 			return -1
 		}
+	}
+
+	// Base versions are equal, compare pre-release metadata
+	if pre1 == "" && pre2 == "" {
+		return 0 // both stable
+	}
+	if pre1 == "" && pre2 != "" {
+		return 1 // stable > pre-release
+	}
+	if pre1 != "" && pre2 == "" {
+		return -1 // pre-release < stable
+	}
+
+	// Both have pre-release, compare type rank, then numeric suffix
+	type1, num1 := parsePreRelease(pre1)
+	type2, num2 := parsePreRelease(pre2)
+
+	rank1 := preReleaseRank(type1)
+	rank2 := preReleaseRank(type2)
+
+	if rank1 > rank2 {
+		return 1
+	}
+	if rank1 < rank2 {
+		return -1
+	}
+	if num1 > num2 {
+		return 1
+	}
+	if num1 < num2 {
+		return -1
 	}
 	return 0
 }
