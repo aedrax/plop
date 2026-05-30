@@ -24,8 +24,8 @@ func UpgradeApp(appName string, config *Config, reg *Registry) error {
 		return err
 	}
 
-	latestVersion := strings.TrimPrefix(release.TagName, "v")
-	if latestVersion == app.Version {
+	latestVersion := stripVPrefix(release.TagName)
+	if latestVersion == stripVPrefix(app.Version) {
 		PrintInfo("Application '%s' is already at the latest version (%s).", appName, app.Version)
 		if !config.AutoConfirm {
 			ans := PromptUser("Reinstall anyway? [y/N]: ", "n")
@@ -92,8 +92,8 @@ func UpgradeAll(config *Config, reg *Registry) error {
 			continue
 		}
 
-		latestVersion := strings.TrimPrefix(release.TagName, "v")
-		if latestVersion != app.Version {
+		latestVersion := stripVPrefix(release.TagName)
+		if latestVersion != stripVPrefix(app.Version) {
 			downloadURL, _ := FindBestAsset(release)
 			if downloadURL != "" {
 				targets = append(targets, UpgradeTarget{
