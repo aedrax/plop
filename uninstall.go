@@ -54,7 +54,7 @@ func UninstallApp(appName string, config *Config, reg *Registry) error {
 				absTarget = filepath.Clean(absTarget)
 
 				// If it points inside our app's opt folder, delete it!
-				if strings.HasPrefix(absTarget, appOptFolder) {
+				if absTarget == appOptFolder || strings.HasPrefix(absTarget, appOptFolder+string(filepath.Separator)) {
 					PrintInfo("Removing executable symlink '%s'...", file.Name())
 					err := os.Remove(filePath)
 					if err != nil {

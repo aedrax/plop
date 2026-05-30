@@ -4226,3 +4226,138 @@ func TestGitHubInstallIntegration(t *testing.T) {
 		}
 	})
 }
+
+func TestUninstallPrefixCollision(t *testing.T) {
+	tests := []struct {
+		name           string
+		appToUninstall string
+		symlinkTarget  string // relative to optDir (e.g., "myapp2/binary")
+		expectDeleted  bool
+	}{
+		{
+			name:           "leaves symlink to /opt/myapp2/binary intact",
+			appToUninstall: "myapp",
+			symlinkTarget:  "myapp2/binary",
+			expectDeleted:  false,
+		},
+		{
+			name:           "leaves symlink to /opt/myapp-extra/bin/tool intact",
+			appToUninstall: "myapp",
+			symlinkTarget:  "myapp-extra/bin/tool",
+			expectDeleted:  false,
+		},
+		{
+			name:           "leaves symlink to /opt/application/bin intact",
+			appToUninstall: "app",
+			symlinkTarget:  "application/bin",
+			expectDeleted:  false,
+		},
+		{
+			name:           "still deletes symlink to /opt/myapp/binary",
+			appToUninstall: "myapp",
+			symlinkTarget:  "myapp/binary",
+			expectDeleted:  true,
+		},
+		{
+			name:           "still deletes symlink to /opt/myapp/bin/tool",
+			appToUninstall: "myapp",
+			symlinkTarget:  "myapp/bin/tool",
+			expectDeleted:  true,
+		},
+		{
+			name:           "handles symlink pointing exactly to /opt/myapp",
+			appToUninstall: "myapp",
+			symlinkTarget:  "myapp",
+			expectDeleted:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			optDir := filepath.Join(tempDir, "opt")
+			binDir := filepath.Join(tempDir, "bin")
+
+			if err := os.MkdirAll(optDir, 0755); err != nil {
+				t.Fatalf("failed to create optDir: %v", err)
+			}
+			if err := os.MkdirAll(binDir, 0755); err != nil {
+				t.Fatalf("failed to create binDir: %v", err)
+			}
+
+			// Create the app's own opt folder
+			appOptFolder := filepath.Join(optDir, tt.appToUninstall)
+			if err := os.MkdirAll(appOptFolder, 0755); err != nil {
+				t.Fatalf("failed to create appOptFolder: %v", err)
+			}
+
+			// Create the full target path (file or directory) so the symlink resolves
+			fullTarget := filepath.Join(optDir, tt.symlinkTarget)
+			targetDir := filepath.Dir(fullTarget)
+			if err := os.MkdirAll(targetDir, 0755); err != nil {
+				t.Fatalf("failed to create target dir: %v", err)
+			}
+			// If the target is a directory itself (e.g., "myapp" or "application/bin"),
+			// ensure it exists as a directory; otherwise create it as a file.
+			if tt.symlinkTarget == tt.appToUninstall {
+				// Edge case: symlink points exactly to the app opt folder (already created)
+			} else {
+				if err := os.MkdirAll(fullTarget, 0755); err != nil {
+					// If MkdirAll fails, try writing as a file
+					if err2 := os.WriteFile(fullTarget, []byte("binary"), 0755); err2 != nil {
+						t.Fatalf("failed to create target: %v", err2)
+					}
+				}
+			}
+
+			// Create a symlink in binDir pointing to the target
+			symlinkPath := filepath.Join(binDir, "link-under-test")
+			if err := os.Symlink(fullTarget, symlinkPath); err != nil {
+				t.Fatalf("failed to create symlink: %v", err)
+			}
+
+			// Set up registry with the app registered
+			registryPathOverride = filepath.Join(tempDir, "registry.json")
+			defer func() { registryPathOverride = "" }()
+
+			reg := &Registry{
+				Apps: map[string]AppMetadata{
+					tt.appToUninstall: {
+						Name:        tt.appToUninstall,
+						Version:     "1.0.0",
+						BinaryPath:  filepath.Join(appOptFolder, "somebin"),
+						SymlinkPath: filepath.Join(binDir, tt.appToUninstall),
+					},
+				},
+			}
+			if err := SaveRegistry(reg); err != nil {
+				t.Fatalf("failed to save registry: %v", err)
+			}
+
+			config := &Config{
+				OptDir:      optDir,
+				BinDir:      binDir,
+				AppsDir:     filepath.Join(tempDir, "apps"),
+				IconsDir:    filepath.Join(tempDir, "icons"),
+				AutoConfirm: true,
+			}
+
+			// Run UninstallApp
+			err := UninstallApp(tt.appToUninstall, config, reg)
+			if err != nil {
+				t.Fatalf("UninstallApp returned error: %v", err)
+			}
+
+			// Check whether the symlink still exists
+			_, statErr := os.Lstat(symlinkPath)
+			symlinkExists := statErr == nil
+
+			if tt.expectDeleted && symlinkExists {
+				t.Errorf("expected symlink to be deleted, but it still exists")
+			}
+			if !tt.expectDeleted && !symlinkExists {
+				t.Errorf("expected symlink to be preserved, but it was deleted")
+			}
+		})
+	}
+}
