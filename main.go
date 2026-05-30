@@ -117,7 +117,7 @@ func handleHelp() {
 }
 
 func handleVersion() {
-	fmt.Printf("plop v1.2.0\n")
+	fmt.Printf("plop v1.2.1\n")
 }
 
 func handleList(args []string, config *Config, reg *Registry) {
