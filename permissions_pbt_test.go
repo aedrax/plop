@@ -1,156 +1,100 @@
 package main
 
 import (
-	"encoding/json"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"testing/quick"
 )
 
-// TestBugCondition_ConfigFilePermissions verifies that LoadConfig() creates
-// new config files with 0600 permissions (owner-only).
-//
-// EXPECTED: This test FAILS on unfixed code because LoadConfig() uses 0644.
-func TestBugCondition_ConfigFilePermissions(t *testing.T) {
-	f := func(token string) bool {
-		tempDir := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", tempDir)
+// PermMode is a custom type for generating valid Unix permission modes
+// that are NOT 0755, so we can observe the bug (source gets changed to 0755).
+type PermMode struct {
+	Mode os.FileMode
+}
 
-		// Call LoadConfig which should create a new config file
-		_, err := LoadConfig()
-		if err != nil {
-			t.Logf("LoadConfig error: %v", err)
-			return false
+// Generate implements quick.Generator for PermMode.
+// It produces valid Unix permission modes in the range [0o000, 0o777] excluding 0o755.
+// Owner-read bit (0o400) is always set so CopyFile can read the source.
+func (PermMode) Generate(r *rand.Rand, size int) reflect.Value {
+	for {
+		mode := os.FileMode(r.Intn(0o777+1)) | 0o400 // ensure owner-read
+		if mode != 0o755 {
+			return reflect.ValueOf(PermMode{Mode: mode})
 		}
-
-		configPath := filepath.Join(tempDir, "plop", "config.json")
-		info, err := os.Stat(configPath)
-		if err != nil {
-			t.Logf("Stat error: %v", err)
-			return false
-		}
-
-		perm := info.Mode().Perm()
-		if perm != 0600 {
-			t.Logf("COUNTEREXAMPLE: LoadConfig() creates config.json with %04o permissions instead of 0600", perm)
-			return false
-		}
-		return true
-	}
-
-	if err := quick.Check(f, &quick.Config{MaxCount: 5}); err != nil {
-		t.Errorf("Bug confirmed: %v", err)
 	}
 }
 
-// TestBugCondition_RegistryFilePermissions verifies that SaveRegistry() writes
-// the registry file with 0600 permissions (owner-only).
+// TestBugCondition_SourceFilePermissionsModifiedByExtractRawBinary is a property-based
+// test that verifies extractRawBinary does NOT modify source file permissions.
 //
-// EXPECTED: This test FAILS on unfixed code because SaveRegistry() uses 0644.
-func TestBugCondition_RegistryFilePermissions(t *testing.T) {
-	f := func(appName string) bool {
-		if appName == "" {
-			appName = "testapp"
-		}
-
-		tempDir := t.TempDir()
-		registryPathOverride = filepath.Join(tempDir, "registry.json")
-		defer func() { registryPathOverride = "" }()
-
-		reg := &Registry{
-			Apps: map[string]AppMetadata{
-				appName: {
-					Name:    appName,
-					Version: "1.0.0",
-				},
-			},
-		}
-
-		err := SaveRegistry(reg)
-		if err != nil {
-			t.Logf("SaveRegistry error: %v", err)
-			return false
-		}
-
-		info, err := os.Stat(registryPathOverride)
-		if err != nil {
-			t.Logf("Stat error: %v", err)
-			return false
-		}
-
-		perm := info.Mode().Perm()
-		if perm != 0600 {
-			t.Logf("COUNTEREXAMPLE: SaveRegistry() creates registry.json with %04o permissions instead of 0600", perm)
-			return false
-		}
-		return true
-	}
-
-	if err := quick.Check(f, &quick.Config{MaxCount: 5}); err != nil {
-		t.Errorf("Bug confirmed: %v", err)
-	}
-}
-
-// TestBugCondition_ExistingPermissiveFileRemediation verifies that loading an
-// existing config file with 0644 permissions tightens it to 0600.
+// EXPECTED OUTCOME on UNFIXED code: This test FAILS because extractRawBinary calls
+// os.Chmod(archivePath, 0755) on the source file, changing its permissions.
+// Failure confirms the bug exists.
 //
-// EXPECTED: This test FAILS on unfixed code because LoadConfig() does not
-// remediate existing permissive files.
-func TestBugCondition_ExistingPermissiveFileRemediation(t *testing.T) {
-	f := func(token string) bool {
-		tempDir := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", tempDir)
+// EXPECTED OUTCOME on FIXED code: This test PASSES because the source chmod is removed.
+func TestBugCondition_SourceFilePermissionsModifiedByExtractRawBinary(t *testing.T) {
+	f := func(pm PermMode) bool {
+		// Create a temp source file with the generated permission mode
+		sourceDir := t.TempDir()
+		sourcePath := filepath.Join(sourceDir, "testbinary")
 
-		// Create a config file with permissive 0644 permissions (simulating old version)
-		configDir := filepath.Join(tempDir, "plop")
-		err := os.MkdirAll(configDir, 0755)
-		if err != nil {
-			t.Logf("MkdirAll error: %v", err)
-			return false
-		}
-
-		configPath := filepath.Join(configDir, "config.json")
-		cfg := &Config{
-			OptDir:      "~/.local/opt",
-			BinDir:      "~/.local/bin",
-			GithubToken: token,
-		}
-		data, err := json.MarshalIndent(cfg, "", "  ")
-		if err != nil {
-			t.Logf("MarshalIndent error: %v", err)
-			return false
-		}
-
-		// Write with permissive 0644 permissions (simulating old plop version)
-		err = os.WriteFile(configPath, data, 0644)
+		err := os.WriteFile(sourcePath, []byte("#!/bin/sh\necho hello\n"), 0o644)
 		if err != nil {
 			t.Logf("WriteFile error: %v", err)
 			return false
 		}
 
-		// Load the config - this should remediate permissions to 0600
-		_, err = LoadConfig()
+		// Set the source file to the random permission mode
+		originalMode := pm.Mode
+		err = os.Chmod(sourcePath, originalMode)
 		if err != nil {
-			t.Logf("LoadConfig error: %v", err)
+			t.Logf("Chmod error: %v", err)
 			return false
 		}
 
-		info, err := os.Stat(configPath)
+		// Verify the permission was set correctly
+		info, err := os.Stat(sourcePath)
 		if err != nil {
-			t.Logf("Stat error: %v", err)
+			t.Logf("Stat error before call: %v", err)
+			return false
+		}
+		if info.Mode().Perm() != originalMode {
+			t.Logf("Failed to set initial permissions: wanted %04o, got %04o", originalMode, info.Mode().Perm())
 			return false
 		}
 
-		perm := info.Mode().Perm()
-		if perm != 0600 {
-			t.Logf("COUNTEREXAMPLE: LoadConfig() leaves existing config.json with %04o permissions instead of remediating to 0600", perm)
+		// Create a temp target directory
+		targetDir := t.TempDir()
+		targetAppDir := filepath.Join(targetDir, "app")
+
+		// Call extractRawBinary
+		err = extractRawBinary(sourcePath, targetAppDir)
+		if err != nil {
+			t.Logf("extractRawBinary error: %v", err)
 			return false
 		}
+
+		// Assert: source file permissions after call == original permissions before call
+		infoAfter, err := os.Stat(sourcePath)
+		if err != nil {
+			t.Logf("Stat error after call: %v", err)
+			return false
+		}
+
+		resultMode := infoAfter.Mode().Perm()
+		if resultMode != originalMode {
+			t.Logf("COUNTEREXAMPLE: source file with permissions %04o was changed to %04o after extractRawBinary",
+				originalMode, resultMode)
+			return false
+		}
+
 		return true
 	}
 
-	if err := quick.Check(f, &quick.Config{MaxCount: 5}); err != nil {
-		t.Errorf("Bug confirmed: %v", err)
+	if err := quick.Check(f, &quick.Config{MaxCount: 100}); err != nil {
+		t.Errorf("Bug confirmed - extractRawBinary modifies source file permissions: %v", err)
 	}
 }

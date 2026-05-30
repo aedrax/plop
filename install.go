@@ -354,7 +354,6 @@ func extractRawBinary(archivePath, targetAppDir string) error {
 		return fmt.Errorf("failed to copy raw binary to target directory: %v", err)
 	}
 
-	os.Chmod(archivePath, 0755)
 	os.Chmod(targetBinaryPath, 0755)
 	return nil
 }
