@@ -37,6 +37,26 @@ cd plop
 go build -o ~/.local/bin/plop .
 ```
 
+## Screenshots Or It Didn't Happen
+
+The following are some action shots of plop
+
+### Install from archive:
+
+<img width="1182" height="404" alt="Image" src="https://github.com/user-attachments/assets/8f28dcbd-7622-42f3-a027-8c61082f787d" />
+
+### Check for updates:
+
+<img width="1182" height="233" alt="Image" src="https://github.com/user-attachments/assets/474e04fc-1783-49ef-9dde-032c671a419f" />
+
+### Perform Upgrade:
+
+<img width="1182" height="507" alt="Image" src="https://github.com/user-attachments/assets/a001ccaa-edcb-4ee4-9cfd-4afe8975a8df" />
+
+### List installed:
+
+<img width="1172" height="178" alt="Image" src="https://github.com/user-attachments/assets/959c506b-0831-44f3-8345-f893cefaec4f" />
+
 ## Quick Start
 
 ### Installing an application
